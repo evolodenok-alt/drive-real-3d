@@ -8,8 +8,8 @@ const ROW_GAP_MIN := 20.0
 const ROW_GAP_MAX := 30.0
 const OBSTACLE_CHANCE := 0.5
 const SHADOWS := true
-const START_COINS := 0
-const REWARD_EVERY_3 := 5000
+const START_COINS := 0           # стартовые монеты (для проверки можно поставить 20000)
+const REWARD_EVERY_3 := 5000     # награда за каждый 3-й финиш
 const SAVE_PATH := "user://save.json"
 const GAUGE_MAX_KMH := 300.0
 
@@ -52,7 +52,6 @@ var preview_car: Node3D
 var preview_id := -1
 var camera_3d: Camera3D
 var world_root: Node3D
-var ui_layer: CanvasLayer
 var ui: Control
 var smoke: CPUParticles3D
 var tail_mat: StandardMaterial3D
@@ -93,11 +92,6 @@ func _ready() -> void:
     _load_game()
     _setup_screen()
     _setup_audio()
-    _setup_env()
-    world_root = Node3D.new()
-    add_child(world_root)
-    ui_layer = CanvasLayer.new()
-    add_child(ui_layer)
     _build_camera()
     get_viewport().size_changed.connect(_on_viewport_resized)
     _update_camera_aspect()
@@ -323,13 +317,14 @@ func _update_audio() -> void:
         sv = skid_amt * 0.7
     skid_player.volume_db = _db(sv)
     skid_player.pitch_scale = 0.9 + skid_amt * 0.3
+
 # ======================= ЭКРАН =======================
 
 func _setup_screen() -> void:
     var window := get_window()
+    window.content_scale_size = Vector2i(1280, 720)
     window.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
     window.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
-    window.content_scale_size = Vector2i(1280, 720)
     if OS.has_feature("android") or OS.has_feature("ios"):
         DisplayServer.screen_set_orientation(DisplayServer.SCREEN_SENSOR_LANDSCAPE)
 
@@ -337,8 +332,6 @@ func _vp() -> Vector2:
     return get_viewport().get_visible_rect().size
 
 func _update_camera_aspect() -> void:
-    if camera_3d == null:
-        return
     var vp := _vp()
     if vp.x < vp.y:
         camera_3d.keep_aspect = Camera3D.KEEP_WIDTH
@@ -346,8 +339,6 @@ func _update_camera_aspect() -> void:
         camera_3d.keep_aspect = Camera3D.KEEP_HEIGHT
 
 func _on_viewport_resized() -> void:
-    if camera_3d == null:
-        return
     _update_camera_aspect()
     match mode:
         "menu":
@@ -373,23 +364,6 @@ func _build_camera() -> void:
     camera_3d.far = 1500.0
     add_child(camera_3d)
 
-func _setup_env() -> void:
-    var env := Environment.new()
-    env.background_mode = Environment.BG_SKY
-    var sky := Sky.new()
-    sky.sky_material = ProceduralSkyMaterial.new()
-    env.sky = sky
-    env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-    env.ambient_light_energy = 0.9
-    var we := WorldEnvironment.new()
-    we.environment = env
-    add_child(we)
-    var sun := DirectionalLight3D.new()
-    sun.rotation_degrees = Vector3(-52, -30, 0)
-    sun.shadow_enabled = SHADOWS
-    sun.directional_shadow_max_distance = 120.0
-    add_child(sun)
-
 # ======================= ВВОД =======================
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -401,9 +375,6 @@ func _unhandled_input(event: InputEvent) -> void:
                 KEY_S, KEY_DOWN: held["brake"] = true
                 KEY_A, KEY_LEFT: held["left"] = true
                 KEY_D, KEY_RIGHT: held["right"] = true
-                KEY_R:
-                    if mode == "playing" and free_mode:
-                        _respawn_car(true)
                 KEY_ESCAPE:
                     if mode == "playing":
                         show_menu()
@@ -454,312 +425,6 @@ func _zone_at(pos: Vector2) -> String:
 
 func _pressed(action: String) -> bool:
     return held.has(action) or touches.values().has(action)
-
-# ======================= ПОМОЩНИКИ ИНТЕРФЕЙСА =======================
-
-func _clear_ui() -> void:
-    if is_instance_valid(ui):
-        ui.queue_free()
-    ui = Control.new()
-    ui.set_anchors_preset(Control.PRESET_FULL_RECT)
-    ui.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    ui_layer.add_child(ui)
-    touch_zones.clear()
-    touch_pads.clear()
-    touches.clear()
-
-func _label(text: String, fs: int = 28, color: Color = Color.WHITE) -> Label:
-    var l := Label.new()
-    l.text = text
-    l.add_theme_font_size_override("font_size", fs)
-    l.add_theme_color_override("font_color", color)
-    l.add_theme_color_override("font_outline_color", Color.BLACK)
-    l.add_theme_constant_override("outline_size", 6)
-    return l
-
-func _button(text: String, cb: Callable, w: float = 340.0, h: float = 56.0) -> Button:
-    var b := Button.new()
-    b.text = text
-    b.custom_minimum_size = Vector2(w, h)
-    b.add_theme_font_size_override("font_size", 26)
-    b.pressed.connect(_on_button_pressed.bind(cb))
-    return b
-
-func _on_button_pressed(cb: Callable) -> void:
-    _play_click()
-    cb.call()
-
-func _side_box(w: float) -> VBoxContainer:
-    var vb := VBoxContainer.new()
-    vb.custom_minimum_size = Vector2(w, 0)
-    vb.add_theme_constant_override("separation", 10)
-    vb.alignment = BoxContainer.ALIGNMENT_CENTER
-    ui.add_child(vb)
-    vb.set_anchors_and_offsets_preset(Control.PRESET_LEFT_WIDE, Control.PRESET_MODE_MINSIZE, 30)
-    return vb
-
-func _center_box() -> VBoxContainer:
-    var dim := ColorRect.new()
-    dim.color = Color(0, 0, 0, 0.5)
-    dim.set_anchors_preset(Control.PRESET_FULL_RECT)
-    dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    ui.add_child(dim)
-    var vb := VBoxContainer.new()
-    vb.add_theme_constant_override("separation", 14)
-    vb.alignment = BoxContainer.ALIGNMENT_CENTER
-    vb.custom_minimum_size = Vector2(460, 0)
-    ui.add_child(vb)
-    vb.set_anchors_preset(Control.PRESET_CENTER)
-    vb.grow_horizontal = Control.GROW_DIRECTION_BOTH
-    vb.grow_vertical = Control.GROW_DIRECTION_BOTH
-    return vb
-
-func _clear_world() -> void:
-    for c in world_root.get_children():
-        c.queue_free()
-    car = null
-    smoke = null
-    preview_car = null
-    tail_mat = null
-    wheels.clear()
-
-func _show_preview(id: int) -> void:
-    _clear_world()
-    var ground := MeshInstance3D.new()
-    var pm := PlaneMesh.new()
-    pm.size = Vector2(80, 80)
-    ground.mesh = pm
-    ground.material_override = _mat(Color(0.35, 0.37, 0.4))
-    world_root.add_child(ground)
-    preview_car = Node3D.new()
-    var mats := _build_car_visual(id, preview_car)
-    preview_body_mat = mats["body"]
-    var cd: Dictionary = CARS[id]
-    var r := float(cd["wheel"])
-    for i in range(4):
-        var holder := Node3D.new()
-        holder.position = _wheel_pos(i, float(cd["len"]), float(cd["wid"])) + Vector3(0, -0.1, 0)
-        preview_car.add_child(holder)
-        _add_wheel_mesh(holder, r)
-    preview_car.position = Vector3(0, r + 0.1, 0)
-    world_root.add_child(preview_car)
-    preview_id = id
-    camera_3d.position = Vector3(5.5, 2.4, 7.5)
-    camera_3d.look_at(Vector3(-1.8, 0.6, 0), Vector3.UP)
-# ======================= ЭКРАНЫ МЕНЮ =======================
-
-func show_menu() -> void:
-    mode = "menu"
-    free_mode = false
-    _engine_sounds(false)
-    _update_music()
-    _show_preview(current_car)
-    _clear_ui()
-    var box := _side_box(380)
-    box.add_child(_label("ГОНКИ", 56, Color(1, 0.85, 0.2)))
-    coins_label = _label("Монеты: %d" % coins, 30)
-    box.add_child(coins_label)
-    box.add_child(_button("Играть", func(): start_run(false)))
-    box.add_child(_button("Свободная езда", func(): start_run(true)))
-    box.add_child(_button("Гараж", func(): garage_sel = current_car; show_garage()))
-    box.add_child(_button("Настройки", func(): show_settings()))
-
-func show_settings() -> void:
-    mode = "settings"
-    _engine_sounds(false)
-    _update_music()
-    _clear_ui()
-    var box := _center_box()
-    box.add_child(_label("Настройки", 44, Color(1, 0.85, 0.2)))
-    var items := [
-        ["music_on", "Музыка"],
-        ["engine_on", "Звук мотора"],
-        ["brake_on", "Звук тормоза"],
-        ["drift_on", "Звук дрифта"],
-        ["click_on", "Клики кнопок"],
-    ]
-    for it in items:
-        var cb := CheckButton.new()
-        cb.text = str(it[1])
-        cb.button_pressed = bool(settings[it[0]])
-        cb.add_theme_font_size_override("font_size", 26)
-        cb.toggled.connect(_on_setting_toggled.bind(str(it[0])))
-        box.add_child(cb)
-    box.add_child(_label("Громкость", 26))
-    var sl := HSlider.new()
-    sl.min_value = 0.0
-    sl.max_value = 1.0
-    sl.step = 0.05
-    sl.value = float(settings["volume"])
-    sl.custom_minimum_size = Vector2(360, 30)
-    sl.value_changed.connect(_on_volume_changed)
-    box.add_child(sl)
-    box.add_child(_button("Назад", func(): _save_game(); show_menu()))
-
-func _on_setting_toggled(on: bool, key: String) -> void:
-    settings[key] = on
-    _update_music()
-    _save_game()
-
-func _on_volume_changed(v: float) -> void:
-    settings["volume"] = v
-    _apply_volume()
-
-# ---------- Гараж ----------
-
-func show_garage() -> void:
-    mode = "garage"
-    _engine_sounds(false)
-    _update_music()
-    _show_preview(garage_sel)
-    _clear_ui()
-    var cd: Dictionary = CARS[garage_sel]
-    var box := _side_box(440)
-    box.add_child(_label("Гараж", 38, Color(1, 0.85, 0.2)))
-    coins_label = _label("Монеты: %d" % coins, 26)
-    box.add_child(coins_label)
-    box.add_child(_label(str(cd["name"]), 34))
-    box.add_child(_label(str(cd["info"]), 22))
-    box.add_child(_label("Мотор %d%% | Скорость %d%% | Сцепл. %d%%" % [int(float(cd["engine"]) * 100.0), int(float(cd["speed"]) * 100.0), int(float(cd["grip"]) * 100.0)], 20))
-    var nav := HBoxContainer.new()
-    nav.add_theme_constant_override("separation", 12)
-    nav.add_child(_button("<", func(): _garage_step(-1), 100.0))
-    nav.add_child(_button(">", func(): _garage_step(1), 100.0))
-    box.add_child(nav)
-    if owned[garage_sel]:
-        if current_car == garage_sel:
-            box.add_child(_label("Выбрана", 26, Color(0.4, 1, 0.5)))
-        else:
-            box.add_child(_button("Выбрать", func(): _garage_select()))
-        box.add_child(_button("Улучшения", func(): show_upgrades()))
-        box.add_child(_button("Покраска", func(): show_paint()))
-    else:
-        box.add_child(_button("Купить за %d" % int(cd["price"]), func(): _garage_buy()))
-    garage_msg = _label("", 24, Color(1, 0.5, 0.4))
-    box.add_child(garage_msg)
-    box.add_child(_button("Назад", func(): _save_game(); show_menu()))
-
-func _garage_step(d: int) -> void:
-    garage_sel = posmod(garage_sel + d, CARS.size())
-    show_garage()
-
-func _garage_select() -> void:
-    current_car = garage_sel
-    _save_game()
-    show_garage()
-
-func _garage_buy() -> void:
-    var price := int(CARS[garage_sel]["price"])
-    if coins >= price:
-        coins -= price
-        owned[garage_sel] = true
-        _save_game()
-        show_garage()
-    else:
-        garage_msg.text = "Не хватает монет!"
-
-# ---------- Улучшения ----------
-
-func _upgrade_cost(level: int) -> int:
-    return 1500 * level
-
-func show_upgrades() -> void:
-    mode = "upgrades"
-    _show_preview(garage_sel)
-    _clear_ui()
-    var box := _side_box(440)
-    box.add_child(_label("Улучшения", 38, Color(1, 0.85, 0.2)))
-    coins_label = _label("Монеты: %d" % coins, 26)
-    box.add_child(coins_label)
-    for n in UPGRADE_NAMES:
-        var lv := int(car_levels[garage_sel][n])
-        var mark := ""
-        if n == selected_upgrade:
-            mark = "> "
-        box.add_child(_button("%s%s  ур. %d/5" % [mark, n, lv], func(): _select_upgrade(n), 400.0, 46.0))
-    var lv_sel := int(car_levels[garage_sel][selected_upgrade])
-    var txt := "%s: %s\n" % [selected_upgrade, str(UPGRADE_INFO[selected_upgrade])]
-    if lv_sel >= 5:
-        txt += "Максимальный уровень"
-    else:
-        txt += "Цена: %d" % _upgrade_cost(lv_sel)
-    upgrade_detail = _label(txt, 22)
-    box.add_child(upgrade_detail)
-    box.add_child(_button("Улучшить", func(): _do_upgrade(), 400.0, 50.0))
-    garage_msg = _label("", 22, Color(1, 0.5, 0.4))
-    box.add_child(garage_msg)
-    box.add_child(_button("Назад", func(): show_garage(), 400.0, 50.0))
-
-func _select_upgrade(n: String) -> void:
-    selected_upgrade = n
-    show_upgrades()
-
-func _do_upgrade() -> void:
-    var lv := int(car_levels[garage_sel][selected_upgrade])
-    if lv >= 5:
-        garage_msg.text = "Уже максимум!"
-        return
-    var cost := _upgrade_cost(lv)
-    if coins < cost:
-        garage_msg.text = "Не хватает монет!"
-        return
-    coins -= cost
-    car_levels[garage_sel][selected_upgrade] = lv + 1
-    _save_game()
-    show_upgrades()
-
-# ---------- Покраска ----------
-
-func show_paint() -> void:
-    mode = "paint"
-    _show_preview(garage_sel)
-    var c: Color = car_colors[garage_sel]
-    paint_h = c.h
-    paint_s = c.s
-    paint_v = c.v
-    _clear_ui()
-    var box := _side_box(440)
-    box.add_child(_label("Покраска", 38, Color(1, 0.85, 0.2)))
-    var names := ["Цвет", "Насыщенность", "Яркость"]
-    var vals := [paint_h, paint_s, paint_v]
-    for i in range(3):
-        box.add_child(_label(str(names[i]), 24))
-        var sl := HSlider.new()
-        sl.min_value = 0.0
-        sl.max_value = 1.0
-        sl.step = 0.01
-        sl.value = float(vals[i])
-        sl.custom_minimum_size = Vector2(400, 34)
-        sl.value_changed.connect(_on_paint_changed.bind(i))
-        box.add_child(sl)
-    box.add_child(_button("Готово", func(): _save_game(); show_garage(), 400.0, 56.0))
-
-func _on_paint_changed(v: float, which: int) -> void:
-    match which:
-        0: paint_h = v
-        1: paint_s = v
-        2: paint_v = v
-    var c := Color.from_hsv(paint_h, paint_s, paint_v)
-    car_colors[garage_sel] = c
-    if preview_body_mat != null:
-        preview_body_mat.albedo_color = c
-
-# ---------- Результат заезда ----------
-
-func _show_result() -> void:
-    mode = "result"
-    _clear_ui()
-    var box := _center_box()
-    var win: bool = bool(last_result.get("win", false))
-    if win:
-        box.add_child(_label("ФИНИШ!", 56, Color(0.4, 1, 0.5)))
-        box.add_child(_label("Награда: +%d монет" % int(last_result.get("reward", 0)), 30))
-    else:
-        box.add_child(_label("Заезд окончен", 48, Color(1, 0.4, 0.4)))
-        box.add_child(_label(str(last_result.get("msg", "")), 28))
-    box.add_child(_label("Монеты: %d" % coins, 28))
-    box.add_child(_button("Ещё раз", func(): start_run(false), 400.0))
-    box.add_child(_button("В меню", func(): show_menu(), 400.0))
 # ======================= ИГРОВОЙ ЦИКЛ =======================
 
 func _physics_process(delta: float) -> void:
@@ -797,7 +462,7 @@ func _physics_process(delta: float) -> void:
         steer_in -= 1.0
 
     # Дрифт: на скорости тормоз + поворот
-    var drift_cmd: bool = brake and steer_in != 0.0 and fwd_speed > 10.0
+    var drift_cmd := brake and steer_in != 0.0 and fwd_speed > 10.0
     drifting = drift_cmd or (absf(side) > 4.5 and speed > 10.0)
 
     var engine := 0.0
@@ -892,333 +557,471 @@ func _process(delta: float) -> void:
             tail_mat.emission_energy_multiplier = 5.0
             tail_mat.albedo_color = Color(1.0, 0.05, 0.05)
         else:
-            tail_mat.emission_energy_multiplier = 1.0
-            tail_mat.albedo_color = Color(0.5, 0.0, 0.0)
+            tail_mat.emission_energy_multiplier = 0.5
+            tail_mat.albedo_color = Color(0.45, 0.02, 0.02)
 
-    # Камера за машиной
+    var pos := car.global_position
     var back := car.global_transform.basis.z
     back.y = 0.0
-    if back.length() > 0.1:
-        var nb := cam_back.lerp(back.normalized(), clampf(delta * 2.5, 0.0, 1.0))
-        if nb.length() > 0.01:
-            cam_back = nb.normalized()
-    var target := car.global_position + cam_back * 9.0 + Vector3(0, 4.5, 0)
-    camera_3d.global_position = camera_3d.global_position.lerp(target, clampf(delta * 6.0, 0.0, 1.0))
-    camera_3d.look_at(car.global_position + Vector3(0, 1.2, 0) - cam_back * 4.0, Vector3.UP)
+    if back.length() < 0.01:
+        back = Vector3(0, 0, 1)
+    back = back.normalized()
+    cam_back = cam_back.slerp(back, minf(1.0, delta * 3.0)).normalized()
+    var target := pos + cam_back * 8.5 + Vector3(0, 3.4, 0)
+    camera_3d.position = camera_3d.position.lerp(target, minf(1.0, delta * 6.0))
+    camera_3d.look_at(pos - cam_back * 5.0 + Vector3(0, 1.0, 0), Vector3.UP)
+    var fov_target := 62.0 + clampf(speed / 45.0, 0.0, 1.0) * 24.0
+    camera_3d.fov = lerpf(camera_3d.fov, fov_target, minf(1.0, delta * 3.0))
 
-    # HUD
-    if is_instance_valid(coins_label):
-        coins_label.text = "Монеты: %d" % coins
-    if is_instance_valid(speed_label):
-        speed_label.text = "%d\nкм/ч" % int(speed * 3.6)
-    if is_instance_valid(debug_label):
+    if is_instance_valid(status_label):
         if free_mode:
-            debug_label.text = ""
+            status_label.text = "Свободный режим"
         else:
-            debug_label.text = "До финиша: %d м" % maxi(0, int(ROAD_LENGTH + car.global_position.z))
+            status_label.text = "До финиша: %d м" % int(maxf(0.0, ROAD_LENGTH + pos.z))
+    if is_instance_valid(coins_label):
+        if free_mode:
+            coins_label.text = "Катайся, прыгай с трамплинов!"
+        else:
+            coins_label.text = "Монеты: %d  |  Финиши: %d/3" % [coins, finishes % 3]
+    if is_instance_valid(speed_label):
+        speed_label.text = "%d" % int(speed * 3.6)
     if is_instance_valid(gauge):
         gauge.queue_redraw()
+    if is_instance_valid(debug_label):
+        var contact := 0
+        for w in wheels:
+            if w.is_in_contact():
+                contact += 1
+        debug_label.text = "колёса на земле: %d/4" % contact
     _update_audio()
 
-# ======================= HUD =======================
+func _on_car_body_entered(body: Node) -> void:
+    if mode != "playing" or not is_instance_valid(car) or free_mode:
+        return
+    if body.is_in_group("obstacle") and car.linear_velocity.length() > 5.0:
+        call_deferred("finish_run", false, "Ты врезался в препятствие!")
+
+func _respawn_car(to_start: bool) -> void:
+    if not is_instance_valid(car):
+        return
+    var yaw := car.global_rotation.y
+    var pos := car.global_position + Vector3(0, 2.0, 0)
+    if to_start:
+        pos = Vector3(0, 2.0, 0)
+        yaw = 0.0
+    car.global_transform = Transform3D(Basis(Vector3.UP, yaw), pos)
+    car.linear_velocity = Vector3.ZERO
+    car.angular_velocity = Vector3.ZERO
+
+# ======================= ИНТЕРФЕЙС: общее =======================
+
+func _clear_ui() -> void:
+    if is_instance_valid(ui):
+        ui.queue_free()
+    ui = Control.new()
+    ui.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+    ui.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    add_child(ui)
+
+func _clear_world() -> void:
+    if is_instance_valid(world_root):
+        world_root.queue_free()
+    world_root = Node3D.new()
+    add_child(world_root)
+    car = null
+    preview_car = null
+    smoke = null
+    wheels.clear()
+
+func _dim(rect: Rect2, alpha: float) -> void:
+    var r := ColorRect.new()
+    r.color = Color(0, 0, 0, alpha)
+    r.position = rect.position
+    r.size = rect.size
+    r.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    ui.add_child(r)
+
+func _label(parent: Control, text: String, pos: Vector2, size: int = 28, color_value: Color = Color.WHITE) -> Label:
+    var label := Label.new()
+    label.text = text
+    label.position = pos
+    label.add_theme_font_size_override("font_size", size)
+    label.add_theme_color_override("font_color", color_value)
+    parent.add_child(label)
+    return label
+
+func _label_c(text: String, y: float, size: int = 28, color_value: Color = Color.WHITE) -> Label:
+    var label := Label.new()
+    label.text = text
+    label.position = Vector2(0, y)
+    label.size = Vector2(_vp().x, size + 20)
+    label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    label.add_theme_font_size_override("font_size", size)
+    label.add_theme_color_override("font_color", color_value)
+    ui.add_child(label)
+    return label
+
+func _button(parent: Control, text: String, pos: Vector2, size: Vector2, callback: Callable) -> Button:
+    var button := Button.new()
+    button.text = text
+    button.position = pos
+    button.size = size
+    button.add_theme_font_size_override("font_size", 24)
+    button.pressed.connect(_play_click)
+    button.pressed.connect(callback)
+    parent.add_child(button)
+    return button
+
+# ======================= ИНТЕРФЕЙС: игра =======================
 
 func _build_hud() -> void:
-    _clear_ui()
     var vp := _vp()
-    coins_label = _label("Монеты: %d" % coins, 28)
-    coins_label.position = Vector2(20, 12)
-    ui.add_child(coins_label)
-    var st := "Свободная езда (R — вернуть машину)"
-    if not free_mode:
-        st = "Заезд"
-    status_label = _label(st, 22)
-    status_label.position = Vector2(20, 50)
-    ui.add_child(status_label)
-    debug_label = _label("", 24, Color(1, 0.9, 0.4))
-    debug_label.position = Vector2(20, 82)
-    ui.add_child(debug_label)
+    touches.clear()
+    touch_zones.clear()
+    touch_pads.clear()
+    _clear_ui()
+    status_label = _label(ui, "", Vector2(25, 20), 24)
+    coins_label = _label(ui, "", Vector2(25, 55), 20)
+    debug_label = _label(ui, "", Vector2(25, 85), 16, Color(0.8, 0.8, 0.8))
 
-    var menu_btn := _button("Меню", func(): show_menu(), 120.0, 46.0)
-    menu_btn.position = Vector2(vp.x * 0.5 - 60.0, 10.0)
-    ui.add_child(menu_btn)
-
+    # Спидометр (внизу по центру)
     gauge = Control.new()
-    gauge.size = Vector2(190, 190)
-    gauge.position = Vector2(vp.x - 210.0, 10.0)
+    gauge.position = Vector2(vp.x / 2.0 - 120.0, vp.y - 250.0)
+    gauge.size = Vector2(240, 240)
     gauge.mouse_filter = Control.MOUSE_FILTER_IGNORE
     gauge.draw.connect(_draw_gauge)
     ui.add_child(gauge)
-    speed_label = _label("0\nкм/ч", 28)
-    speed_label.set_anchors_preset(Control.PRESET_FULL_RECT)
+    speed_label = Label.new()
+    speed_label.position = Vector2(0, 140)
+    speed_label.size = Vector2(240, 54)
     speed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-    speed_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    speed_label.add_theme_font_size_override("font_size", 44)
+    speed_label.add_theme_color_override("font_color", Color.WHITE)
+    speed_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    speed_label.text = "0"
     gauge.add_child(speed_label)
+    var unit := Label.new()
+    unit.position = Vector2(0, 192)
+    unit.size = Vector2(240, 30)
+    unit.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    unit.add_theme_font_size_override("font_size", 20)
+    unit.add_theme_color_override("font_color", Color.GOLD)
+    unit.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    unit.text = "км/ч"
+    gauge.add_child(unit)
 
-    var s := Vector2(150, 150)
-    _add_pad("left", "<", Vector2(20, vp.y - 170.0), s)
-    _add_pad("right", ">", Vector2(190, vp.y - 170.0), s)
-    _add_pad("brake", "ТОРМОЗ", Vector2(vp.x - 340.0, vp.y - 170.0), s)
-    _add_pad("gas", "ГАЗ", Vector2(vp.x - 170.0, vp.y - 170.0), s)
+    if free_mode:
+        _button(ui, "ВЫЙТИ", Vector2(vp.x - 170, 12), Vector2(150, 48), show_menu)
+        _button(ui, "СБРОС", Vector2(vp.x - 340, 12), Vector2(150, 48), _reset_pressed)
+    else:
+        _button(ui, "МЕНЮ", Vector2(vp.x - 170, 12), Vector2(150, 48), show_menu)
+    _touch_pad("gas", "▲ ГАЗ", Rect2(30, vp.y - 260, 200, 120))
+    _touch_pad("brake", "▼ ТОРМОЗ", Rect2(30, vp.y - 125, 200, 95))
+    _touch_pad("left", "◀", Rect2(vp.x - 270, vp.y - 170, 115, 140))
+    _touch_pad("right", "▶", Rect2(vp.x - 145, vp.y - 170, 115, 140))
 
-func _add_pad(action: String, text: String, pos: Vector2, sz: Vector2) -> void:
-    var pad := ColorRect.new()
-    pad.color = Color(1, 1, 1, 0.28)
-    pad.position = pos
-    pad.size = sz
-    pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    var l := _label(text, 28)
-    l.set_anchors_preset(Control.PRESET_FULL_RECT)
-    l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-    l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-    pad.add_child(l)
-    ui.add_child(pad)
-    touch_pads[action] = pad
-    touch_zones[action] = Rect2(pos, sz)
+func _reset_pressed() -> void:
+    _respawn_car(false)
 
 func _draw_gauge() -> void:
     if not is_instance_valid(gauge):
         return
-    var c := gauge.size * 0.5
-    var r := 80.0
-    gauge.draw_circle(c, r + 8.0, Color(0, 0, 0, 0.5))
-    gauge.draw_arc(c, r, deg_to_rad(135.0), deg_to_rad(405.0), 64, Color(1, 1, 1, 0.3), 6.0)
-    var t := clampf(speed * 3.6 / GAUGE_MAX_KMH, 0.0, 1.0)
-    var ang := deg_to_rad(135.0 + 270.0 * t)
-    if t > 0.01:
-        gauge.draw_arc(c, r, deg_to_rad(135.0), ang, 64, Color(0.2, 0.9, 0.4), 8.0)
-    gauge.draw_line(c, c + Vector2(cos(ang), sin(ang)) * (r - 10.0), Color(1, 0.2, 0.2), 4.0)
-# ======================= МИР И МАШИНА =======================
+    var c := Vector2(120, 120)
+    gauge.draw_circle(c, 112.0, Color(0, 0, 0, 0.45))
+    gauge.draw_arc(c, 104.0, deg_to_rad(135.0), deg_to_rad(405.0), 64, Color(1, 1, 1, 0.5), 4.0, true)
+    gauge.draw_arc(c, 98.0, deg_to_rad(135.0 + 0.8 * 270.0), deg_to_rad(405.0), 24, Color(1.0, 0.2, 0.2, 0.8), 6.0, true)
+    for i in range(13):
+        var a := deg_to_rad(135.0 + float(i) * 22.5)
+        var d := Vector2(cos(a), sin(a))
+        gauge.draw_line(c + d * 88.0, c + d * 104.0, Color(1, 1, 1, 0.85), 3.0, true)
+    var ratio := clampf(speed * 3.6 / GAUGE_MAX_KMH, 0.0, 1.0)
+    var na := deg_to_rad(135.0 + ratio * 270.0)
+    var nd := Vector2(cos(na), sin(na))
+    gauge.draw_line(c - nd * 12.0, c + nd * 86.0, Color(1.0, 0.25, 0.2), 5.0, true)
+    gauge.draw_circle(c, 9.0, Color(0.9, 0.9, 0.9))
 
-func _mat(color: Color) -> StandardMaterial3D:
-    var m := StandardMaterial3D.new()
-    m.albedo_color = color
-    return m
+func _touch_pad(action: String, text: String, rect: Rect2) -> void:
+    var pad := Panel.new()
+    pad.position = rect.position
+    pad.size = rect.size
+    pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    var style := StyleBoxFlat.new()
+    style.bg_color = Color(0.1, 0.12, 0.16, 0.8)
+    style.set_corner_radius_all(18)
+    style.set_border_width_all(3)
+    style.border_color = Color(1, 1, 1, 0.6)
+    pad.add_theme_stylebox_override("panel", style)
+    ui.add_child(pad)
+    var label := Label.new()
+    label.text = text
+    label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    label.add_theme_font_size_override("font_size", 30)
+    pad.add_child(label)
+    label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+    touch_zones[action] = rect
+    touch_pads[action] = pad
+    pad.modulate.a = 0.6
+# ======================= МЕНЮ =======================
 
-func _box_mesh(parent: Node3D, size: Vector3, pos: Vector3, mat: Material) -> MeshInstance3D:
-    var mi := MeshInstance3D.new()
-    var bm := BoxMesh.new()
-    bm.size = size
-    mi.mesh = bm
-    mi.position = pos
-    mi.material_override = mat
-    parent.add_child(mi)
-    return mi
-
-func _add_static_box(size: Vector3, pos: Vector3, mat: Material) -> StaticBody3D:
-    var sb := StaticBody3D.new()
-    sb.position = pos
-    var cs := CollisionShape3D.new()
-    var bs := BoxShape3D.new()
-    bs.size = size
-    cs.shape = bs
-    sb.add_child(cs)
-    _box_mesh(sb, size, Vector3.ZERO, mat)
-    world_root.add_child(sb)
-    return sb
-
-func _wheel_pos(i: int, car_len: float, car_wid: float) -> Vector3:
-    var sx := 1.0
-    if i % 2 == 0:
-        sx = -1.0
-    var sz := 1.0
-    if i < 2:
-        sz = -1.0
-    return Vector3(sx * (car_wid * 0.5 - 0.05), 0.0, sz * car_len * 0.32)
-
-func _add_wheel_mesh(parent: Node3D, r: float) -> void:
-    var mi := MeshInstance3D.new()
-    var cm := CylinderMesh.new()
-    cm.top_radius = r
-    cm.bottom_radius = r
-    cm.height = 0.3
-    mi.mesh = cm
-    mi.material_override = _mat(Color(0.08, 0.08, 0.08))
-    mi.rotation_degrees = Vector3(0, 0, 90)
-    parent.add_child(mi)
-
-func _build_car_visual(id: int, root: Node3D) -> Dictionary:
-    var cd: Dictionary = CARS[id]
-    var cl := float(cd["len"])
-    var cw := float(cd["wid"])
-    var body_mat := _mat(car_colors[id])
-    body_mat.metallic = 0.5
-    body_mat.roughness = 0.35
-    var glass := _mat(Color(0.1, 0.15, 0.2))
-    glass.metallic = 0.8
-    glass.roughness = 0.1
-    var head := _mat(Color(1, 1, 0.8))
-    head.emission_enabled = true
-    head.emission = Color(1, 1, 0.8)
-    head.emission_energy_multiplier = 1.5
-    var tail := _mat(Color(0.5, 0, 0))
-    tail.emission_enabled = true
-    tail.emission = Color(1, 0, 0)
-    tail.emission_energy_multiplier = 1.0
-    _box_mesh(root, Vector3(cw, 0.5, cl), Vector3(0, 0.3, 0), body_mat)
-    _box_mesh(root, Vector3(cw * 0.86, 0.42, cl * 0.45), Vector3(0, 0.78, cl * 0.08), glass)
-    _box_mesh(root, Vector3(cw * 0.86, 0.06, cl * 0.45), Vector3(0, 1.01, cl * 0.08), body_mat)
-    for sx in [-1.0, 1.0]:
-        _box_mesh(root, Vector3(0.35, 0.15, 0.05), Vector3(sx * cw * 0.33, 0.38, -cl * 0.5), head)
-        _box_mesh(root, Vector3(0.35, 0.15, 0.05), Vector3(sx * cw * 0.33, 0.38, cl * 0.5), tail)
-    return {"body": body_mat, "tail": tail}
-
-func _spawn_car() -> void:
-    var cd: Dictionary = CARS[current_car]
-    var cl := float(cd["len"])
-    var cw := float(cd["wid"])
-    var r := float(cd["wheel"])
-    car = VehicleBody3D.new()
-    car.mass = float(cd["mass"])
-    car.center_of_mass_mode = RigidBody3D.CENTER_OF_MASS_MODE_CUSTOM
-    car.center_of_mass = Vector3(0, -0.2, 0)
-    car.position = Vector3(0, 1.3, 0)
-    world_root.add_child(car)
-
-    var cs := CollisionShape3D.new()
-    var bs := BoxShape3D.new()
-    bs.size = Vector3(cw, 0.9, cl)
-    cs.shape = bs
-    cs.position = Vector3(0, 0.5, 0)
-    car.add_child(cs)
-
-    var mats := _build_car_visual(current_car, car)
-    last_body_mat = mats["body"]
-    tail_mat = mats["tail"]
-
-    wheels.clear()
-    var grip := float(cd["grip"])
-    var sus_lv := _lv("Подвеска")
-    var whl_lv := _lv("Колёса")
-    for i in range(4):
-        var wl := VehicleWheel3D.new()
-        wl.position = _wheel_pos(i, cl, cw)
-        wl.wheel_radius = r
-        wl.wheel_rest_length = 0.2
-        wl.suspension_travel = 0.3
-        wl.suspension_stiffness = 50.0 + float(sus_lv - 1) * 6.0
-        wl.suspension_max_force = 10000.0
-        wl.wheel_roll_influence = maxf(0.1, 0.3 - float(sus_lv - 1) * 0.05)
-        wl.wheel_friction_slip = 9.0 * grip + float(whl_lv - 1) * 0.9
-        wl.use_as_steering = i < 2
-        wl.use_as_traction = true
-        car.add_child(wl)
-        _add_wheel_mesh(wl, r)
-        wheels.append(wl)
-
-    smoke = CPUParticles3D.new()
-    smoke.emitting = false
-    smoke.amount = 40
-    smoke.lifetime = 0.9
-    smoke.direction = Vector3(0, 1, 0)
-    smoke.spread = 25.0
-    smoke.initial_velocity_min = 0.5
-    smoke.initial_velocity_max = 1.5
-    smoke.gravity = Vector3(0, 0.3, 0)
-    smoke.local_coords = false
-    var sm := SphereMesh.new()
-    sm.radius = 0.35
-    sm.height = 0.7
-    var smat := StandardMaterial3D.new()
-    smat.albedo_color = Color(0.8, 0.8, 0.8, 0.45)
-    smat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-    smat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-    sm.material = smat
-    smoke.mesh = sm
-    smoke.position = Vector3(0, 0.2, cl * 0.5)
-    car.add_child(smoke)
-
-func _build_world(free: bool) -> void:
-    var total_len := ROAD_LENGTH + 100.0
-    var cz := -(ROAD_LENGTH + 40.0) * 0.5
-    var sand_size := Vector3(320, 0.2, total_len)
-    var sand_pos := Vector3(0, -0.12, cz)
-    if free:
-        sand_size = Vector3(1800, 0.2, 1800)
-        sand_pos = Vector3(0, -0.12, 0)
-    _add_static_box(sand_size, sand_pos, _mat(Color(0.85, 0.72, 0.45)))
-    _add_static_box(Vector3(10.6, 0.2, total_len), Vector3(0, -0.1, cz), _mat(Color(0.22, 0.22, 0.24)))
-
-    var white := _mat(Color(0.95, 0.95, 0.95))
-    var yellow := _mat(Color(0.95, 0.8, 0.1))
-    for x in [-3.15, -1.05, 1.05, 3.15]:
-        _box_mesh(world_root, Vector3(0.12, 0.02, total_len), Vector3(x, 0.012, cz), white)
-    for x in [-5.0, 5.0]:
-        _box_mesh(world_root, Vector3(0.15, 0.02, total_len), Vector3(x, 0.012, cz), yellow)
-
-    if free:
-        return
-
-    # Финишные ворота
-    var red := _mat(Color(0.85, 0.1, 0.1))
-    _box_mesh(world_root, Vector3(10.6, 0.02, 1.0), Vector3(0, 0.014, -ROAD_LENGTH), white)
-    for x in [-5.4, 5.4]:
-        _box_mesh(world_root, Vector3(0.4, 6.0, 0.4), Vector3(x, 3.0, -ROAD_LENGTH), red)
-    _box_mesh(world_root, Vector3(11.2, 0.8, 0.4), Vector3(0, 6.0, -ROAD_LENGTH), red)
-
-    # Препятствия: в каждом ряду минимум одна свободная полоса
-    var omat := _mat(Color(0.9, 0.35, 0.1))
-    var z := -FIRST_ROW_Z
-    while z > -ROAD_LENGTH + 20.0:
-        var free_lane := randi() % LANES.size()
-        for li in range(LANES.size()):
-            if li == free_lane:
-                continue
-            if randf() < OBSTACLE_CHANCE:
-                _add_static_box(Vector3(1.7, 1.2, 1.7), Vector3(LANES[li], 0.6, z), omat)
-        z -= randf_range(ROW_GAP_MIN, ROW_GAP_MAX)
-
-# ======================= СТАРТ / ФИНИШ / РЕСПАУН =======================
-
-func start_run(free: bool) -> void:
-    free_mode = free
-    _clear_world()
-    _build_world(free)
-    _spawn_car()
-    speed = 0.0
-    flip_timer = 0.0
-    rpm = 0.3
-    gas_amt = 0.0
-    brake_amt = 0.0
-    skid_amt = 0.0
-    drifting = false
+func show_menu() -> void:
+    mode = "menu"
+    free_mode = false
     held.clear()
     touches.clear()
-    cam_back = Vector3(0, 0, 1)
-    camera_3d.global_position = car.global_position + Vector3(0, 4.5, 9)
-    mode = "playing"
-    _build_hud()
-    _update_music()
-    _engine_sounds(true)
-
-func _respawn_car(reset_pos: bool) -> void:
-    if not is_instance_valid(car):
-        return
-    var pos := Vector3(0, 1.3, 0)
-    if not reset_pos:
-        pos = car.global_position + Vector3(0, 2, 0)
-    car.global_transform = Transform3D(Basis(), pos)
-    car.linear_velocity = Vector3.ZERO
-    car.angular_velocity = Vector3.ZERO
-    car.steering = 0.0
-    cam_back = Vector3(0, 0, 1)
-    flip_timer = 0.0
-
-func finish_run(win: bool, msg: String) -> void:
-    if mode != "playing":
-        return
-    var reward := 0
-    if win:
-        finishes += 1
-        reward = 500
-        if finishes % 3 == 0:
-            reward += REWARD_EVERY_3
-        coins += reward
-    last_result = {"win": win, "msg": msg, "reward": reward}
-    mode = "result"
-    if is_instance_valid(car):
-        car.engine_force = 0.0
-        car.brake = 5.0
     _engine_sounds(false)
+    _clear_world()
+    _clear_ui()
     _update_music()
+    var vp := _vp()
+    _dim(Rect2(0, 0, 520, vp.y), 0.35)
+    _label(ui, "DRIVE 3D", Vector2(80, 30), 58, Color(0.25, 0.75, 1.0))
+    _label(ui, "Монеты: %d     Финиши: %d/3" % [coins, finishes % 3], Vector2(85, 105), 25, Color.GOLD)
+    _label(ui, "Машина: %s" % CARS[current_car]["name"], Vector2(85, 140), 22)
+    _button(ui, "ЗАЕЗД ДО ФИНИША", Vector2(90, 190), Vector2(340, 60), start_race)
+    _button(ui, "СВОБОДНЫЙ РЕЖИМ", Vector2(90, 265), Vector2(340, 60), start_free)
+    _button(ui, "ГАРАЖ", Vector2(90, 340), Vector2(340, 60), open_garage)
+    _button(ui, "НАСТРОЙКИ ЗВУКА", Vector2(90, 415), Vector2(340, 60), show_settings)
+    _label(ui, "Поверни телефон горизонтально", Vector2(85, 500), 21)
+    camera_3d.fov = 55.0
+    camera_3d.position = Vector3(4.2, 2.0, 7.0)
+    camera_3d.look_at(Vector3(-1.6, 0.7, 0.0), Vector3.UP)
+    _make_menu_world()
+
+# ======================= НАСТРОЙКИ ЗВУКА =======================
+
+func show_settings() -> void:
+    mode = "settings"
+    _clear_ui()
+    var vp := _vp()
+    _dim(Rect2(0, 0, 700, vp.y), 0.6)
+    _label(ui, "НАСТРОЙКИ ЗВУКА", Vector2(70, 30), 42, Color(0.25, 0.75, 1.0))
+    var items := [["music_on", "Музыка меню"], ["engine_on", "Звук газа"], ["brake_on", "Звук тормоза"], ["drift_on", "Звук дрифта"], ["click_on", "Звуки кнопок"]]
+    for i in range(items.size()):
+        var key: String = items[i][0]
+        var title: String = items[i][1]
+        var state := "ВЫКЛ"
+        if bool(settings[key]):
+            state = "ВКЛ"
+        _button(ui, "%s: %s" % [title, state], Vector2(70, 105 + i * 68), Vector2(520, 56), func(): _toggle_setting(key))
+    _label(ui, "Общая громкость", Vector2(70, 455), 24)
+    var s := HSlider.new()
+    s.min_value = 0.0
+    s.max_value = 1.0
+    s.step = 0.05
+    s.value = float(settings["volume"])
+    s.position = Vector2(70, 495)
+    s.custom_minimum_size = Vector2(520, 40)
+    s.size = Vector2(520, 40)
+    s.value_changed.connect(_on_volume_changed)
+    s.drag_ended.connect(_volume_saved)
+    ui.add_child(s)
+    _button(ui, "НАЗАД", Vector2(70, 570), Vector2(220, 55), show_menu)
+
+func _toggle_setting(key: String) -> void:
+    settings[key] = not bool(settings[key])
     _save_game()
-    _show_result()
+    _update_music()
+    show_settings()
+
+func _on_volume_changed(v: float) -> void:
+    settings["volume"] = v
+    _apply_volume()
+
+func _volume_saved(_changed: bool) -> void:
+    _save_game()
+
+# ======================= ГАРАЖ =======================
+
+func open_garage() -> void:
+    garage_sel = current_car
+    show_garage()
+
+func show_garage() -> void:
+    mode = "garage"
+    held.clear()
+    touches.clear()
+    _clear_ui()
+    if not is_instance_valid(preview_car) or preview_id != garage_sel:
+        _rebuild_preview(garage_sel)
+    var vp := _vp()
+    _dim(Rect2(0, 0, 820, vp.y), 0.6)
+    _label(ui, "ГАРАЖ", Vector2(70, 25), 42, Color(0.25, 0.75, 1.0))
+    _label(ui, "Монеты: %d" % coins, Vector2(75, 80), 27, Color.GOLD)
+    for i in range(CARS.size()):
+        var tag := ""
+        if i == current_car:
+            tag = "  [едет]"
+        elif owned[i]:
+            tag = "  [куплена]"
+        else:
+            tag = "  [%d]" % CARS[i]["price"]
+        var idx := i
+        _button(ui, "%d. %s%s" % [i + 1, CARS[i]["name"], tag], Vector2(70, 130 + i * 62), Vector2(400, 52), func(): _select_car(idx))
+    var cd: Dictionary = CARS[garage_sel]
+    var top_kmh := int(38.0 * float(cd["speed"]) * 3.6)
+    var txt := "%s\n%s\nМакс. скорость: %d км/ч\nРазгон: %d%%\nСцепление: %d%%" % [cd["name"], cd["info"], top_kmh, int(float(cd["engine"]) * 100.0), int(float(cd["grip"]) * 100.0)]
+    _label(ui, txt, Vector2(500, 130), 22, Color.WHITE)
+    garage_msg = _label(ui, "", Vector2(500, 300), 22, Color.GOLD)
+    if owned[garage_sel]:
+        if garage_sel != current_car:
+            _button(ui, "ВЫБРАТЬ ЭТУ МАШИНУ", Vector2(500, 335), Vector2(290, 52), equip_car)
+        _button(ui, "УЛУЧШЕНИЯ", Vector2(500, 400), Vector2(290, 52), show_upgrades)
+        _button(ui, "ПОКРАСИТЬ", Vector2(500, 465), Vector2(290, 52), show_paint)
+    else:
+        _button(ui, "КУПИТЬ ЗА %d" % int(cd["price"]), Vector2(500, 335), Vector2(290, 52), buy_car)
+    _button(ui, "НАЗАД", Vector2(70, 570), Vector2(220, 55), show_menu)
+
+func _select_car(i: int) -> void:
+    garage_sel = i
+    _rebuild_preview(i)
+    show_garage()
+
+func equip_car() -> void:
+    current_car = garage_sel
+    _save_game()
+    show_garage()
+
+func buy_car() -> void:
+    var price := int(CARS[garage_sel]["price"])
+    if coins < price:
+        garage_msg.text = "Не хватает монет! Нужно: %d" % price
+        return
+    coins -= price
+    owned[garage_sel] = true
+    current_car = garage_sel
+    _save_game()
+    show_garage()
+
+# ======================= УЛУЧШЕНИЯ =======================
+
+func show_upgrades() -> void:
+    mode = "upgrades"
+    _clear_ui()
+    var vp := _vp()
+    _dim(Rect2(0, 0, 820, vp.y), 0.6)
+    var lv: Dictionary = car_levels[garage_sel]
+    _label(ui, "УЛУЧШЕНИЯ: %s" % CARS[garage_sel]["name"], Vector2(70, 25), 38, Color(0.25, 0.75, 1.0))
+    _label(ui, "Монеты: %d" % coins, Vector2(75, 85), 27, Color.GOLD)
+    for i in range(UPGRADE_NAMES.size()):
+        var upgrade_name: String = UPGRADE_NAMES[i]
+        _button(ui, "%s  •  Ур. %d" % [upgrade_name, lv[upgrade_name]], Vector2(70, 140 + i * 65), Vector2(360, 52), func(): _select_upgrade(upgrade_name))
+    upgrade_detail = _label(ui, "", Vector2(470, 160), 24, Color.GOLD)
+    _button(ui, "УЛУЧШИТЬ", Vector2(470, 330), Vector2(290, 60), buy_upgrade)
+    _button(ui, "НАЗАД", Vector2(70, 535), Vector2(220, 55), show_garage)
+    _refresh_upgrade_detail()
+
+func _select_upgrade(upgrade_name: String) -> void:
+    selected_upgrade = upgrade_name
+    _refresh_upgrade_detail()
+
+func _upgrade_cost(level: int) -> int:
+    if level == 1:
+        return 1000
+    if level == 2:
+        return 1800
+    return 1800 + (level - 2) * 1200
+
+func _refresh_upgrade_detail() -> void:
+    if not is_instance_valid(upgrade_detail):
+        return
+    var level: int = car_levels[garage_sel][selected_upgrade]
+    var info: String = UPGRADE_INFO[selected_upgrade]
+    if level >= 5:
+        upgrade_detail.text = "%s\n%s\nУровень %d — максимум" % [selected_upgrade, info, level]
+    else:
+        upgrade_detail.text = "%s\n%s\nУр. %d → %d\nЦена: %d монет" % [selected_upgrade, info, level, level + 1, _upgrade_cost(level)]
+
+func buy_upgrade() -> void:
+    var level: int = car_levels[garage_sel][selected_upgrade]
+    if level >= 5:
+        upgrade_detail.text = "Достигнут максимальный уровень!"
+        return
+    var cost := _upgrade_cost(level)
+    if coins < cost:
+        upgrade_detail.text = "Не хватает монет! Нужно: %d" % cost
+        return
+    coins -= cost
+    car_levels[garage_sel][selected_upgrade] = level + 1
+    _save_game()
+    show_upgrades()
+
+# ======================= ПОКРАСКА =======================
+
+func show_paint() -> void:
+    mode = "paint"
+    _clear_ui()
+    var vp := _vp()
+    _dim(Rect2(0, 0, 820, vp.y), 0.6)
+    _label(ui, "ПОКРАСКА: %s" % CARS[garage_sel]["name"], Vector2(70, 25), 38, Color(0.25, 0.75, 1.0))
+    var col: Color = car_colors[garage_sel]
+    paint_h = col.h
+    paint_s = col.s
+    paint_v = col.v
+    _paint_slider(100, "Оттенок", paint_h, _set_paint_h)
+    _paint_slider(190, "Насыщенность", paint_s, _set_paint_s)
+    _paint_slider(280, "Яркость", paint_v, _set_paint_v)
+    _label(ui, "Готовые цвета", Vector2(70, 375), 24)
+    var presets := [Color(0.9, 0.1, 0.1), Color(0.95, 0.5, 0.05), Color(0.95, 0.85, 0.1), Color(0.15, 0.7, 0.2), Color(0.1, 0.75, 0.85), Color(0.1, 0.3, 0.9), Color(0.6, 0.2, 0.8), Color(0.95, 0.4, 0.7), Color(0.95, 0.95, 0.95), Color(0.1, 0.1, 0.1)]
+    for i in range(presets.size()):
+        _swatch(Vector2(70 + (i % 5) * 76, 415 + int(i / 5) * 72), presets[i])
+    _button(ui, "НАЗАД", Vector2(70, 570), Vector2(220, 55), show_garage)
+
+func _paint_slider(y: float, title: String, value: float, cb: Callable) -> void:
+    _label(ui, title, Vector2(70, y), 24)
+    var sl := HSlider.new()
+    sl.min_value = 0.0
+    sl.max_value = 1.0
+    sl.step = 0.01
+    sl.value = value
+    sl.position = Vector2(70, y + 38)
+    sl.custom_minimum_size = Vector2(440, 40)
+    sl.size = Vector2(440, 40)
+    sl.value_changed.connect(cb)
+    sl.drag_ended.connect(_paint_saved)
+    ui.add_child(sl)
+
+func _set_paint_h(v: float) -> void:
+    paint_h = v
+    _apply_paint()
+
+func _set_paint_s(v: float) -> void:
+    paint_s = v
+    _apply_paint()
+
+func _set_paint_v(v: float) -> void:
+    paint_v = v
+    _apply_paint()
+
+func _paint_saved(_changed: bool) -> void:
+    _save_game()
+
+func _apply_paint() -> void:
+    var c := Color.from_hsv(paint_h, paint_s, paint_v)
+    car_colors[garage_sel] = c
+    if preview_body_mat != null:
+        preview_body_mat.albedo_color = c
+
+func _swatch(pos: Vector2, c: Color) -> void:
+    var b := Button.new()
+    b.position = pos
+    b.size = Vector2(60, 60)
+    for st in ["normal", "hover", "pressed"]:
+        var sb := StyleBoxFlat.new()
+        sb.bg_color = c
+        sb.set_corner_radius_all(10)
+        sb.set_border_width_all(3)
+        sb.border_color = Color(1, 1, 1, 0.8)
+        b.add_theme_stylebox_override(st, sb)
+    b.pressed.connect(_play_click)
+    b.pressed.connect(func(): _pick_swatch(c))
+    ui.add_child(b)
+
+func _pick_swatch(c: Color) -> void:
+    paint_h = c.h
+    paint_s = c.s
+    paint_v = c.v
+    _apply_paint()
+    _save_game()
+    show_paint()
