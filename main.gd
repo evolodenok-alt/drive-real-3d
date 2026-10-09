@@ -317,14 +317,13 @@ func _update_audio() -> void:
         sv = skid_amt * 0.7
     skid_player.volume_db = _db(sv)
     skid_player.pitch_scale = 0.9 + skid_amt * 0.3
-
 # ======================= ЭКРАН =======================
 
 func _setup_screen() -> void:
     var window := get_window()
-    window.content_scale_size = Vector2i(1280, 720)
     window.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
     window.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
+    window.content_scale_size = Vector2i(1280, 720)
     if OS.has_feature("android") or OS.has_feature("ios"):
         DisplayServer.screen_set_orientation(DisplayServer.SCREEN_SENSOR_LANDSCAPE)
 
@@ -332,6 +331,8 @@ func _vp() -> Vector2:
     return get_viewport().get_visible_rect().size
 
 func _update_camera_aspect() -> void:
+    if camera_3d == null:
+        return
     var vp := _vp()
     if vp.x < vp.y:
         camera_3d.keep_aspect = Camera3D.KEEP_WIDTH
@@ -339,6 +340,8 @@ func _update_camera_aspect() -> void:
         camera_3d.keep_aspect = Camera3D.KEEP_HEIGHT
 
 func _on_viewport_resized() -> void:
+    if camera_3d == null:
+        return
     _update_camera_aspect()
     match mode:
         "menu":
@@ -425,6 +428,7 @@ func _zone_at(pos: Vector2) -> String:
 
 func _pressed(action: String) -> bool:
     return held.has(action) or touches.values().has(action)
+
 # ======================= ИГРОВОЙ ЦИКЛ =======================
 
 func _physics_process(delta: float) -> void:
@@ -1025,6 +1029,7 @@ func _pick_swatch(c: Color) -> void:
     _apply_paint()
     _save_game()
     show_paint()
+
 # ======================= ЗАПУСК ИГРЫ =======================
 
 func start_race() -> void:
@@ -1108,7 +1113,6 @@ func _static_box(pos: Vector3, size: Vector3, mat: Material, rot_deg: Vector3) -
     body.add_child(cs)
     _box(body, Vector3.ZERO, size, mat)
     return body
-
 # ======================= МИР =======================
 
 func _make_sky_and_light() -> void:
@@ -1492,4 +1496,87 @@ func _create_car() -> VehicleBody3D:
     _make_wheel(v, Vector3(wx, cy, -L * 0.31), true, r)
     _make_wheel(v, Vector3(-wx, cy, L * 0.30), false, r)
     _make_wheel(v, Vector3(wx, cy, L * 0.30), false, r)
-    v.body_ent
+    v.body_entered.connect(_on_car_body_entered)
+
+    # Дым от дрифта (включается в _physics_process через smoke.emitting)
+    smoke = CPUParticles3D.new()
+    smoke.position = Vector3(0, -0.4, L * 0.3)
+    smoke.emitting = false
+    smoke.amount = 40
+    smoke.lifetime = 1.0
+    smoke.local_coords = false
+    smoke.direction = Vector3(0, 1, 0)
+    smoke.spread = 35.0
+    smoke.initial_velocity_min = 1.0
+    smoke.initial_velocity_max = 2.5
+    smoke.gravity = Vector3(0, 0.5, 0)
+    smoke.color = Color(0.9, 0.9, 0.9, 0.5)
+    var sm := SphereMesh.new()
+    sm.radius = 0.35
+    sm.height = 0.7
+    sm.radial_segments = 8
+    sm.rings = 4
+    smoke.mesh = sm
+    var smat := StandardMaterial3D.new()
+    smat.albedo_color = Color(0.9, 0.9, 0.9, 0.45)
+    smat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+    smat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    smat.vertex_color_use_as_albedo = true
+    smoke.material_override = smat
+    v.add_child(smoke)
+    return v
+
+# Улучшение «Подвеска» влияет на устойчивость в поворотах
+func _apply_upgrades() -> void:
+    var sl := _lv("Подвеска")
+    for w in wheels:
+        w.suspension_stiffness = 40.0 + float(sl - 1) * 4.0
+        w.damping_compression = 0.4 + float(sl - 1) * 0.05
+        w.damping_relaxation = 0.6 + float(sl - 1) * 0.05
+        w.wheel_roll_influence = maxf(0.02, 0.08 - float(sl - 1) * 0.015)
+    if is_instance_valid(car):
+        car.angular_damp = 0.5 + float(sl - 1) * 0.15
+
+# ======================= ФИНИШ И РЕЗУЛЬТАТ =======================
+
+func finish_run(success: bool, reason: String) -> void:
+    if mode != "playing":
+        return
+    var reward := 0
+    if success:
+        finishes += 1
+        if finishes % 3 == 0:
+            reward = REWARD_EVERY_3
+            coins += reward
+    last_result = {"success": success, "reason": reason, "reward": reward}
+    mode = "result"
+    held.clear()
+    touches.clear()
+    if is_instance_valid(car):
+        car.engine_force = 0.0
+        car.brake = 20.0
+    if is_instance_valid(smoke):
+        smoke.emitting = false
+    _engine_sounds(false)
+    _save_game()
+    _update_music()
+    _show_result()
+
+func _show_result() -> void:
+    _clear_ui()
+    var vp := _vp()
+    _dim(Rect2(0, 0, vp.x, vp.y), 0.5)
+    var ok: bool = bool(last_result.get("success", false))
+    if ok:
+        _label_c("ФИНИШ!", vp.y * 0.18, 64, Color(0.3, 1.0, 0.4))
+        var reward: int = int(last_result.get("reward", 0))
+        if reward > 0:
+            _label_c("Награда: +%d монет!" % reward, vp.y * 0.18 + 90.0, 34, Color.GOLD)
+        else:
+            _label_c("Финишей до награды: %d" % (3 - finishes % 3), vp.y * 0.18 + 90.0, 30, Color.GOLD)
+    else:
+        _label_c("ЗАЕЗД ПРОВАЛЕН", vp.y * 0.18, 56, Color(1.0, 0.35, 0.3))
+        _label_c(str(last_result.get("reason", "")), vp.y * 0.18 + 85.0, 30, Color.WHITE)
+    _label_c("Монеты: %d     Финиши: %d/3" % [coins, finishes % 3], vp.y * 0.18 + 140.0, 26, Color.GOLD)
+    _button(ui, "ЕЩЁ РАЗ", Vector2(vp.x / 2.0 - 170.0, vp.y * 0.55), Vector2(340, 60), start_race)
+    _button(ui, "МЕНЮ", Vector2(vp.x / 2.0 - 170.0, vp.y * 0.55 + 80.0), Vector2(340, 60), show_menu)
