@@ -1,33 +1,46 @@
 extends Node3D
 
-const ROAD_LENGTH := 260.0
+const ROAD_LENGTH := 400.0
 const UPGRADE_NAMES := ["Мотор", "Подвеска", "Колёса", "Скорость", "Тормоза"]
+const UPGRADE_INFO := {
+    "Мотор": "Сильнее разгон",
+    "Подвеска": "Устойчивее в поворотах",
+    "Колёса": "Лучше сцепление и руление",
+    "Скорость": "Выше максимальная скорость",
+    "Тормоза": "Короче тормозной путь",
+}
 
-# Полосы для препятствий (по X) и настройки их генерации
+const SHADOWS := true          # false = выключить тени (если телефон тормозит)
+const TERRAIN_HALF_W := 96.0
+
+# Препятствия: полосы по X и настройки генерации
 const LANES := [-4.8, -2.4, 0.0, 2.4, 4.8]
-const FIRST_ROW_Z := 45.0      # где начинается первый ряд препятствий
-const ROW_GAP_MIN := 20.0      # мин. расстояние между рядами (м)
-const ROW_GAP_MAX := 30.0      # макс. расстояние между рядами (м)
-const OBSTACLE_CHANCE := 0.55  # шанс препятствия на каждой "занятой" полосе (0..1)
+const FIRST_ROW_Z := 45.0
+const ROW_GAP_MIN := 20.0
+const ROW_GAP_MAX := 30.0
+const OBSTACLE_CHANCE := 0.55
 
 var coins := 0
 var finishes := 0
 var levels := {"Мотор": 1, "Подвеска": 1, "Колёса": 1, "Скорость": 1, "Тормоза": 1}
 var selected_upgrade := "Мотор"
 var mode := "menu"
-var car: Node3D
+var car: VehicleBody3D
+var wheels: Array[VehicleWheel3D] = []
+var preview_car: Node3D
 var camera_3d: Camera3D
 var world_root: Node3D
 var ui: Control
+var terrain_noise: FastNoiseLite
 var speed := 0.0
-var distance := 0.0
 var damage := 0.0
-var held := {}            # клавиатура
-var touches := {}         # палец (index) -> действие ("gas", "brake", "left", "right")
-var touch_zones := {}     # действие -> Rect2 (область кнопки на экране)
-var touch_pads := {}      # действие -> Panel (для подсветки)
+var flip_timer := 0.0
+var cam_back := Vector3(0, 0, 1)
+var held := {}
+var touches := {}
+var touch_zones := {}
+var touch_pads := {}
 var last_result := {}
-var road_obstacles: Array[Node3D] = []
 var status_label: Label
 var speed_label: Label
 var coins_label: Label
@@ -42,11 +55,11 @@ func _ready() -> void:
     show_menu()
 
 func _setup_screen() -> void:
-    # Игра растягивается на весь экран (без чёрных полос)
     var window := get_window()
     window.content_scale_size = Vector2i(1280, 720)
     window.content_scale_mode = Window.CONTENT_SCALE_MODE_CANVAS_ITEMS
     window.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_EXPAND
+    get_viewport().msaa_3d = Viewport.MSAA_2X
     if OS.has_feature("android") or OS.has_feature("ios"):
         DisplayServer.screen_set_orientation(DisplayServer.SCREEN_SENSOR_LANDSCAPE)
 
@@ -74,10 +87,12 @@ func _on_viewport_resized() -> void:
 
 func _build_camera() -> void:
     camera_3d = Camera3D.new()
-    camera_3d.position = Vector3(0, 7, -12)
-    camera_3d.rotation_degrees = Vector3(-18, 0, 0)
+    camera_3d.position = Vector3(0, 7, 12)
     camera_3d.current = true
+    camera_3d.far = 1500.0
     add_child(camera_3d)
+
+# ---------------------------------------------------------------- ввод
 
 func _unhandled_input(event: InputEvent) -> void:
     if event is InputEventKey:
@@ -98,7 +113,6 @@ func _unhandled_input(event: InputEvent) -> void:
                 KEY_A, KEY_LEFT: held.erase("left")
                 KEY_D, KEY_RIGHT: held.erase("right")
 
-# Сенсорное управление: кнопки можно ЗАЖИМАТЬ, можно жать несколько сразу
 func _input(event: InputEvent) -> void:
     if mode != "playing":
         return
@@ -137,70 +151,121 @@ func _zone_at(pos: Vector2) -> String:
             return action
     return ""
 
-func _process(delta: float) -> void:
+func _pressed(action: String) -> bool:
+    return held.has(action) or touches.values().has(action)
+
+# ---------------------------------------------------------------- игровой цикл
+
+func _physics_process(delta: float) -> void:
     if mode != "playing" or not is_instance_valid(car):
         return
-    var active := touches.values()
-    var gas := held.has("gas") or active.has("gas")
-    var brake := held.has("brake") or active.has("brake")
-    var left := held.has("left") or active.has("left")
-    var right := held.has("right") or active.has("right")
+    var gas := _pressed("gas")
+    var brake := _pressed("brake")
+    var left := _pressed("left")
+    var right := _pressed("right")
 
-    for action in touch_pads:
-        var pad: Control = touch_pads[action]
-        if is_instance_valid(pad):
-            var pressed: bool = held.has(action) or active.has(action)
-            pad.modulate.a = 1.0 if pressed else 0.6
+    var engine_max: float = 36.0 + float(levels["Мотор"] - 1) * 7.0
+    var max_speed: float = 32.0 + float(levels["Скорость"] - 1) * 4.5 + float(levels["Мотор"] - 1) * 1.5
+    var brake_max: float = 18.0 + float(levels["Тормоза"] - 1) * 4.0
 
-    var motor_bonus: float = float(levels["Мотор"] - 1) * 2.2
-    var max_speed: float = 29.0 + float(levels["Скорость"] - 1) * 4.0 + motor_bonus
-    var accel: float = 15.0 + float(levels["Мотор"] - 1) * 2.5
-    var braking: float = 25.0 + float(levels["Тормоза"] - 1) * 6.0
+    var fwd := -car.global_transform.basis.z
+    var fwd_speed := fwd.dot(car.linear_velocity)
+    speed = car.linear_velocity.length()
 
+    var engine := 0.0
+    var brake_force := 0.0
     if gas:
-        speed += accel * delta
+        var ratio := clampf(maxf(fwd_speed, 0.0) / max_speed, 0.0, 1.0)
+        engine = engine_max * (1.0 - ratio * ratio)
     elif brake:
-        speed -= braking * delta
+        if fwd_speed > 1.5:
+            brake_force = brake_max
+        else:
+            engine = -engine_max * 0.3
     else:
-        speed -= 4.0 * delta
-    speed = clampf(speed, 0.0, max_speed)
+        brake_force = 1.0
+    car.engine_force = engine
+    car.brake = brake_force
 
-    # Камера смотрит в сторону +Z, поэтому "вправо" на экране = минус X
-    var steer := 0.0
+    # В Godot положительный угол руля = поворот налево
+    var steer_in := 0.0
     if left:
-        steer += 1.0
+        steer_in += 1.0
     if right:
-        steer -= 1.0
-    var turn_strength := 1.7 + float(levels["Колёса"] - 1) * 0.22
-    car.position.x += steer * turn_strength * (0.3 + speed / max_speed) * delta * 4.0
-    car.position.x = clampf(car.position.x, -10.0, 10.0)
-    car.rotation.y = lerpf(car.rotation.y, steer * 0.22, minf(1.0, delta * 8.0))
-    car.position.z += speed * delta
-    distance = car.position.z
+        steer_in -= 1.0
+    var speed_factor := clampf(absf(fwd_speed) / max_speed, 0.0, 1.0)
+    var max_steer := lerpf(0.55, 0.16, speed_factor)
+    var steer_rate := 2.6 + float(levels["Колёса"] - 1) * 0.25
+    car.steering = move_toward(car.steering, steer_in * max_steer, delta * steer_rate)
 
-    if absf(car.position.x) > 6.0:
-        damage += delta * (0.8 + speed / 18.0)
+    # Сцепление: на траве хуже
+    var offroad := absf(car.global_position.x) > 6.5
+    var grip := (3.2 + float(levels["Колёса"] - 1) * 0.5) * (0.55 if offroad else 1.0)
+    for w in wheels:
+        w.wheel_friction_slip = grip
+    car.linear_damp = 0.6 if offroad else 0.05
+
+    if absf(car.global_position.x) > 7.0:
+        damage += delta * (0.6 + speed / 25.0)
         if damage > 1.7:
             finish_run(false, "Ты съехал с дороги и разбил машину!")
             return
 
-    for obstacle in road_obstacles:
-        if is_instance_valid(obstacle) and absf(car.position.z - obstacle.position.z) < 2.0 and absf(car.position.x - obstacle.position.x) < 1.5:
-            finish_run(false, "Ты врезался в препятствие!")
+    if car.global_transform.basis.y.y < 0.3:
+        flip_timer += delta
+        if flip_timer > 1.5:
+            finish_run(false, "Машина перевернулась!")
             return
+    else:
+        flip_timer = 0.0
 
-    if car.position.z >= ROAD_LENGTH:
-        finish_run(true, "")
+    if car.global_position.y < -20.0:
+        finish_run(false, "Ты улетел с трассы!")
         return
 
-    camera_3d.position = camera_3d.position.lerp(Vector3(car.position.x * 0.45, 7.5, car.position.z - 12.0), minf(1.0, delta * 4.0))
-    camera_3d.look_at(Vector3(car.position.x, 0.5, car.position.z + 8.0), Vector3.UP)
+    if car.global_position.z <= -ROAD_LENGTH:
+        finish_run(true, "")
+
+func _process(delta: float) -> void:
+    if mode == "menu" or mode == "upgrades":
+        if is_instance_valid(preview_car):
+            preview_car.rotation.y += delta * 0.45
+        return
+    if mode != "playing" or not is_instance_valid(car):
+        return
+
+    for action in touch_pads:
+        var pad: Control = touch_pads[action]
+        if is_instance_valid(pad):
+            pad.modulate.a = 1.0 if _pressed(action) else 0.6
+
+    var pos := car.global_position
+    var back := car.global_transform.basis.z
+    back.y = 0.0
+    if back.length() < 0.01:
+        back = Vector3(0, 0, 1)
+    back = back.normalized()
+    cam_back = cam_back.slerp(back, minf(1.0, delta * 3.0)).normalized()
+    var target := pos + cam_back * 8.5 + Vector3(0, 3.4, 0)
+    camera_3d.position = camera_3d.position.lerp(target, minf(1.0, delta * 6.0))
+    camera_3d.look_at(pos - cam_back * 5.0 + Vector3(0, 1.0, 0), Vector3.UP)
+    var fov_target := 62.0 + clampf(speed / 45.0, 0.0, 1.0) * 24.0
+    camera_3d.fov = lerpf(camera_3d.fov, fov_target, minf(1.0, delta * 3.0))
+
     if is_instance_valid(status_label):
-        status_label.text = "До финиша: %d м" % int(maxf(0.0, ROAD_LENGTH - car.position.z))
+        status_label.text = "До финиша: %d м" % int(maxf(0.0, ROAD_LENGTH + pos.z))
     if is_instance_valid(speed_label):
         speed_label.text = "%d км/ч" % int(speed * 3.6)
     if is_instance_valid(coins_label):
         coins_label.text = "Монеты: %d  |  Финиши: %d/3" % [coins, finishes % 3]
+
+func _on_car_body_entered(body: Node) -> void:
+    if mode != "playing" or not is_instance_valid(car):
+        return
+    if body.is_in_group("obstacle") and car.linear_velocity.length() > 5.0:
+        call_deferred("finish_run", false, "Ты врезался в препятствие!")
+
+# ---------------------------------------------------------------- интерфейс
 
 func _clear_ui() -> void:
     if is_instance_valid(ui):
@@ -216,7 +281,16 @@ func _clear_world() -> void:
     world_root = Node3D.new()
     add_child(world_root)
     car = null
-    road_obstacles.clear()
+    preview_car = null
+    wheels.clear()
+
+func _dim(rect: Rect2, alpha: float) -> void:
+    var r := ColorRect.new()
+    r.color = Color(0, 0, 0, alpha)
+    r.position = rect.position
+    r.size = rect.size
+    r.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    ui.add_child(r)
 
 func _label(parent: Control, text: String, pos: Vector2, size: int = 28, color_value: Color = Color.WHITE) -> Label:
     var label := Label.new()
@@ -227,7 +301,6 @@ func _label(parent: Control, text: String, pos: Vector2, size: int = 28, color_v
     parent.add_child(label)
     return label
 
-# Подпись по центру экрана
 func _label_c(text: String, y: float, size: int = 28, color_value: Color = Color.WHITE) -> Label:
     var label := Label.new()
     label.text = text
@@ -262,8 +335,12 @@ func show_menu() -> void:
     touches.clear()
     _clear_world()
     _clear_ui()
-    camera_3d.position = Vector3(0, 7, -12)
-    camera_3d.look_at(Vector3(0, 1, 8), Vector3.UP)
+    var vp := _vp()
+    _make_menu_world()
+    camera_3d.fov = 55.0
+    camera_3d.position = Vector3(4.2, 2.0, 7.0)
+    camera_3d.look_at(Vector3(-1.6, 0.7, 0.0), Vector3.UP)
+    _dim(Rect2(0, 0, 520, vp.y), 0.35)
     _label(ui, "DRIVE 3D", Vector2(80, 55), 58, Color(0.25, 0.75, 1.0))
     _label(ui, "3D заезды • препятствия • гараж", Vector2(85, 125), 25)
     _label(ui, "Монеты: %d     Финиши: %d/3" % [coins, finishes % 3], Vector2(85, 175), 25, Color.GOLD)
@@ -271,24 +348,21 @@ func show_menu() -> void:
     _button(ui, "ГАРАЖ / УЛУЧШЕНИЯ", Vector2(90, 335), Vector2(300, 65), show_upgrades)
     _button(ui, "НА ВЕСЬ ЭКРАН", Vector2(90, 420), Vector2(300, 55), _toggle_fullscreen)
     _label(ui, "Управление: WASD / стрелки или экранные кнопки", Vector2(85, 500), 21)
-    # 3D car preview
-    var preview := Node3D.new()
-    preview.position = Vector3(3.5, 0.0, 4.0)
-    world_root.add_child(preview)
-    _make_car_mesh(preview)
 
 func show_upgrades() -> void:
     mode = "upgrades"
     held.clear()
     touches.clear()
     _clear_ui()
+    var vp := _vp()
+    _dim(Rect2(0, 0, 960, vp.y), 0.6)
     _label(ui, "ГАРАЖ — УЛУЧШЕНИЯ", Vector2(70, 35), 42, Color(0.25, 0.75, 1.0))
     _label(ui, "Монеты: %d" % coins, Vector2(75, 90), 27, Color.GOLD)
     for i in range(UPGRADE_NAMES.size()):
         var upgrade_name: String = UPGRADE_NAMES[i]
         _button(ui, "%s  •  Ур. %d" % [upgrade_name, levels[upgrade_name]], Vector2(70, 145 + i * 65), Vector2(330, 52), func(): _select_upgrade(upgrade_name))
-    upgrade_detail = _label(ui, "", Vector2(470, 190), 26, Color.GOLD)
-    _button(ui, "УЛУЧШИТЬ", Vector2(470, 300), Vector2(270, 60), buy_upgrade)
+    upgrade_detail = _label(ui, "", Vector2(450, 170), 24, Color.GOLD)
+    _button(ui, "УЛУЧШИТЬ", Vector2(450, 330), Vector2(270, 60), buy_upgrade)
     _button(ui, "НАЗАД", Vector2(70, 535), Vector2(220, 55), show_menu)
     _refresh_upgrade_detail()
 
@@ -307,10 +381,11 @@ func _refresh_upgrade_detail() -> void:
     if not is_instance_valid(upgrade_detail):
         return
     var level: int = levels[selected_upgrade]
+    var info: String = UPGRADE_INFO[selected_upgrade]
     if level >= 5:
-        upgrade_detail.text = "%s\nУровень %d — максимум" % [selected_upgrade, level]
+        upgrade_detail.text = "%s\n%s\nУровень %d — максимум" % [selected_upgrade, info, level]
     else:
-        upgrade_detail.text = "%s\nУр. %d → %d\nЦена: %d монет" % [selected_upgrade, level, level + 1, _upgrade_cost(level)]
+        upgrade_detail.text = "%s\n%s\nУр. %d → %d\nЦена: %d монет" % [selected_upgrade, info, level, level + 1, _upgrade_cost(level)]
 
 func buy_upgrade() -> void:
     var level: int = levels[selected_upgrade]
@@ -328,21 +403,22 @@ func buy_upgrade() -> void:
 func start_run() -> void:
     mode = "playing"
     speed = 0.0
-    distance = 0.0
     damage = 0.0
+    flip_timer = 0.0
     held.clear()
     touches.clear()
     _clear_world()
     _make_environment()
-    car = Node3D.new()
-    car.position = Vector3(0, 0.55, 0)
+    car = _create_car()
+    car.position = Vector3(0, 1.1, 0)
     world_root.add_child(car)
-    _make_car_mesh(car)
-    camera_3d.position = Vector3(0, 7, -12)
-    camera_3d.look_at(Vector3(0, 1, 8), Vector3.UP)
+    _apply_upgrades()
+    cam_back = Vector3(0, 0, 1)
+    camera_3d.fov = 62.0
+    camera_3d.position = Vector3(0, 4.4, 8.5)
+    camera_3d.look_at(Vector3(0, 1.0, -5.0), Vector3.UP)
     _build_hud()
 
-# Интерфейс заезда (подстраивается под размер экрана)
 func _build_hud() -> void:
     var vp := _vp()
     touches.clear()
@@ -354,10 +430,8 @@ func _build_hud() -> void:
     coins_label = _label(ui, "Монеты: %d  |  Финиши: %d/3" % [coins, finishes % 3], Vector2(25, 88), 20)
     speed_label = _label(ui, "%d км/ч" % int(speed * 3.6), Vector2(vp.x - 200, 72), 28, Color.GOLD)
     _button(ui, "МЕНЮ", Vector2(vp.x - 170, 12), Vector2(150, 48), show_menu)
-    # Левая сторона: газ и тормоз
     _touch_pad("gas", "▲ ГАЗ", Rect2(30, vp.y - 260, 200, 120))
     _touch_pad("brake", "▼ ТОРМОЗ", Rect2(30, vp.y - 125, 200, 95))
-    # Правая сторона: повороты
     _touch_pad("left", "◀", Rect2(vp.x - 270, vp.y - 170, 115, 140))
     _touch_pad("right", "▶", Rect2(vp.x - 145, vp.y - 170, 115, 140))
 
@@ -385,130 +459,97 @@ func _touch_pad(action: String, text: String, rect: Rect2) -> void:
     touch_pads[action] = pad
     pad.modulate.a = 0.6
 
-func _make_environment() -> void:
-    var env := WorldEnvironment.new()
-    var environment := Environment.new()
-    environment.background_mode = Environment.BG_SKY
-    environment.sky = Sky.new()
-    environment.sky.sky_material = ProceduralSkyMaterial.new()
-    environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-    environment.ambient_light_color = Color(0.72, 0.78, 0.86)
-    environment.ambient_light_energy = 0.8
-    env.environment = environment
-    world_root.add_child(env)
-    _box(world_root, Vector3(0, -0.5, ROAD_LENGTH / 2), Vector3(100, 0.5, ROAD_LENGTH + 50), Color(0.18, 0.42, 0.18))
-    _box(world_root, Vector3(0, -0.15, ROAD_LENGTH / 2), Vector3(12, 0.25, ROAD_LENGTH + 25), Color(0.16, 0.17, 0.19))
-    for x in [-6.15, 6.15]:
-        _box(world_root, Vector3(x, 0.02, ROAD_LENGTH / 2), Vector3(0.18, 0.08, ROAD_LENGTH + 25), Color.WHITE)
-    for z in range(0, int(ROAD_LENGTH), 12):
-        _box(world_root, Vector3(0, 0.02, z), Vector3(0.16, 0.07, 5), Color(0.95, 0.86, 0.6))
-    # Stylized roadside trees
-    for side in [-1, 1]:
-        for i in range(25):
-            var z := randf_range(0, ROAD_LENGTH)
-            var x: float = side * randf_range(10, 24)
-            _box(world_root, Vector3(x, 0.8, z), Vector3(0.55, 1.6, 0.55), Color(0.32, 0.2, 0.1))
-            var crown := _mesh_instance(world_root, Vector3(x, 2.2, z), Color(0.12, randf_range(0.28, 0.48), 0.1), "sphere")
-            crown.scale = Vector3(1.5, 2.0, 1.5)
-    # Препятствия — каждый заезд расставляются по-новому
-    _spawn_obstacles()
-    _make_gate(85.0, Color(0.1, 0.7, 1.0))
-    _make_gate(170.0, Color(0.1, 0.7, 1.0))
-    _make_gate(ROAD_LENGTH - 7.0, Color(0.2, 1.0, 0.35))
+# ---------------------------------------------------------------- материалы и примитивы
 
-# Ряды препятствий. В каждом ряду есть хотя бы одна свободная полоса,
-# и она смещается не более чем на 2 полосы от предыдущей — проехать всегда
-# можно, но нужно постоянно маневрировать.
-func _spawn_obstacles() -> void:
-    var path_lane := randi_range(1, 3)
-    var z := FIRST_ROW_Z
-    while z < ROAD_LENGTH - 25.0:
-        path_lane = clampi(path_lane + randi_range(-2, 2), 0, LANES.size() - 1)
-        var placed := 0
-        for lane in range(LANES.size()):
-            if lane == path_lane:
-                continue
-            if randf() < OBSTACLE_CHANCE:
-                _spawn_obstacle(LANES[lane] + randf_range(-0.25, 0.25), z + randf_range(-2.0, 2.0))
-                placed += 1
-        if placed == 0:
-            var other := (path_lane + randi_range(1, LANES.size() - 1)) % LANES.size()
-            _spawn_obstacle(LANES[other], z)
-        z += randf_range(ROW_GAP_MIN, ROW_GAP_MAX)
+func _mat(c: Color, metallic: float = 0.0, rough: float = 0.8, emission: float = 0.0) -> StandardMaterial3D:
+    var m := StandardMaterial3D.new()
+    m.albedo_color = c
+    m.metallic = metallic
+    m.roughness = rough
+    if emission > 0.0:
+        m.emission_enabled = true
+        m.emission = c
+        m.emission_energy_multiplier = emission
+    return m
 
-func _spawn_obstacle(x: float, z: float) -> void:
-    var palette := [Color(0.95, 0.35, 0.08), Color(0.85, 0.15, 0.15), Color(0.95, 0.75, 0.1)]
-    var c: Color = palette.pick_random()
-    var obstacle := Node3D.new()
-    obstacle.position = Vector3(x, 0.8, z)
-    world_root.add_child(obstacle)
-    _box(obstacle, Vector3.ZERO, Vector3(1.5, 1.6, 1.5), c)
-    road_obstacles.append(obstacle)
-
-func _make_gate(z: float, c: Color) -> void:
-    var gate := Node3D.new()
-    gate.position.z = z
-    world_root.add_child(gate)
-    _box(gate, Vector3(-5.2, 2.2, 0), Vector3(0.22, 4.4, 0.22), c)
-    _box(gate, Vector3(5.2, 2.2, 0), Vector3(0.22, 4.4, 0.22), c)
-    _box(gate, Vector3(0, 4.4, 0), Vector3(10.6, 0.22, 0.22), c)
-
-func _box(parent: Node3D, pos: Vector3, size: Vector3, c: Color) -> MeshInstance3D:
+func _box(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> MeshInstance3D:
     var mesh := BoxMesh.new()
     mesh.size = size
     var instance := MeshInstance3D.new()
     instance.mesh = mesh
     instance.position = pos
-    var material := StandardMaterial3D.new()
-    material.albedo_color = c
-    material.roughness = 0.82
-    instance.material_override = material
+    instance.material_override = mat
     parent.add_child(instance)
     return instance
 
-func _mesh_instance(parent: Node3D, pos: Vector3, c: Color, shape: String) -> MeshInstance3D:
+func _cyl(parent: Node3D, pos: Vector3, radius: float, height: float, mat: Material, segs: int = 16) -> MeshInstance3D:
+    var mesh := CylinderMesh.new()
+    mesh.top_radius = radius
+    mesh.bottom_radius = radius
+    mesh.height = height
+    mesh.radial_segments = segs
+    mesh.rings = 1
     var instance := MeshInstance3D.new()
-    if shape == "sphere":
-        instance.mesh = SphereMesh.new()
-    else:
-        instance.mesh = BoxMesh.new()
-    var material := StandardMaterial3D.new()
-    material.albedo_color = c
-    instance.material_override = material
+    instance.mesh = mesh
     instance.position = pos
+    instance.material_override = mat
     parent.add_child(instance)
     return instance
 
-func _make_car_mesh(parent: Node3D) -> void:
-    _box(parent, Vector3(0, 0, 0), Vector3(1.9, 0.55, 3.5), Color(0.04, 0.28, 0.88))
-    _box(parent, Vector3(0, 0.5, -0.25), Vector3(1.32, 0.6, 1.55), Color(0.06, 0.09, 0.14))
-    _box(parent, Vector3(0, 0.54, 0.55), Vector3(1.1, 0.32, 0.1), Color(0.35, 0.75, 0.95))
-    _box(parent, Vector3(-0.58, -0.05, 1.78), Vector3(0.36, 0.14, 0.08), Color(1.0, 0.9, 0.55))
-    _box(parent, Vector3(0.58, -0.05, 1.78), Vector3(0.36, 0.14, 0.08), Color(1.0, 0.9, 0.55))
-    for x in [-0.98, 0.98]:
-        for z in [-1.1, 1.1]:
-            _box(parent, Vector3(x, -0.12, z), Vector3(0.32, 0.45, 0.62), Color(0.025, 0.025, 0.03))
+func _add_multimesh(mesh: Mesh, mat: Material, xforms: Array) -> void:
+    if xforms.is_empty():
+        return
+    var mm := MultiMesh.new()
+    mm.transform_format = MultiMesh.TRANSFORM_3D
+    mm.mesh = mesh
+    mm.instance_count = xforms.size()
+    for i in range(xforms.size()):
+        mm.set_instance_transform(i, xforms[i])
+    var inst := MultiMeshInstance3D.new()
+    inst.multimesh = mm
+    inst.material_override = mat
+    world_root.add_child(inst)
 
-func finish_run(success: bool, reason: String) -> void:
-    mode = "result"
-    held.clear()
-    touches.clear()
-    var reward := 0
-    if success:
-        finishes += 1
-        if finishes % 3 == 0:
-            reward = 5000
-            coins += reward
-    last_result = {"success": success, "reason": reason, "reward": reward}
-    _show_result()
+# ---------------------------------------------------------------- мир
 
-func _show_result() -> void:
-    var vp := _vp()
-    var cx := vp.x / 2.0
-    _clear_ui()
-    if last_result.get("success", false):
-        var reward: int = last_result.get("reward", 0)
-        _label_c("ФИНИШ!", 110, 58, Color(0.2, 1.0, 0.35))
-        _label_c("Ты успешно добрался до финиша!", 200, 28)
-        if reward > 0:
-            _label_c
+func _make_sky_and_light() -> void:
+    var env := WorldEnvironment.new()
+    var environment := Environment.new()
+    environment.background_mode = Environment.BG_SKY
+    var sky_mat := ProceduralSkyMaterial.new()
+    sky_mat.sky_top_color = Color(0.22, 0.45, 0.82)
+    sky_mat.sky_horizon_color = Color(0.68, 0.78, 0.9)
+    sky_mat.ground_horizon_color = Color(0.68, 0.78, 0.9)
+    sky_mat.ground_bottom_color = Color(0.3, 0.4, 0.3)
+    environment.sky = Sky.new()
+    environment.sky.sky_material = sky_mat
+    environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+    environment.ambient_light_color = Color(0.6, 0.67, 0.78)
+    environment.ambient_light_energy = 0.55
+    environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+    environment.fog_enabled = true
+    environment.fog_light_color = Color(0.7, 0.78, 0.88)
+    environment.fog_density = 0.003
+    env.environment = environment
+    world_root.add_child(env)
+    var sun := DirectionalLight3D.new()
+    sun.rotation_degrees = Vector3(-48, 35, 0)
+    sun.light_energy = 1.25
+    sun.light_color = Color(1.0, 0.95, 0.85)
+    sun.shadow_enabled = SHADOWS
+    sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+    sun.directional_shadow_max_distance = 90.0
+    world_root.add_child(sun)
+
+func _make_menu_world() -> void:
+    _make_sky_and_light()
+    _box(world_root, Vector3(0, -0.12, 0), Vector3(400, 0.2, 400), _mat(Color(0.17, 0.36, 0.15), 0.0, 1.0))
+    _box(world_root, Vector3(0, -0.05, 0), Vector3(16, 0.1, 40), _mat(Color(0.12, 0.12, 0.14), 0.0, 0.95))
+    preview_car = Node3D.new()
+    preview_car.position = Vector3(0, 0.7, 0)
+    world_root.add_child(preview_car)
+    _build_car_visual(preview_car)
+    for p in [Vector3(-0.93, -0.3, -1.3), Vector3(0.93, -0.3, -1.3), Vector3(-0.93, -0.3, 1.25), Vector3(0.93, -0.3, 1.25)]:
+        _make_wheel_mesh(preview_car, p)
+
+func _make_environment() ->
