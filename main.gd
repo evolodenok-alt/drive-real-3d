@@ -12,6 +12,7 @@ const START_COINS := 0
 const REWARD_EVERY_3 := 5000
 const SAVE_PATH := "user://save.json"
 const GAUGE_MAX_KMH := 300.0
+const GRAVITY := 18.0
 
 const UPGRADE_NAMES := ["Мотор", "Подвеска", "Колёса", "Скорость", "Тормоза"]
 const UPGRADE_INFO := {
@@ -46,8 +47,10 @@ var paint_v := 0.9
 
 var mode := "menu"
 var free_mode := false
-var car: VehicleBody3D
-var wheels: Array[VehicleWheel3D] = []
+var car: CharacterBody3D
+var vis: Node3D
+var wheel_spins: Array[Node3D] = []
+var wheel_steers: Array[Node3D] = []
 var preview_car: Node3D
 var preview_id := -1
 var camera_3d: Camera3D
@@ -59,7 +62,8 @@ var tail_mat: StandardMaterial3D
 var preview_body_mat: StandardMaterial3D
 
 var speed := 0.0
-var flip_timer := 0.0
+var yaw := 0.0
+var steer_vis := 0.0
 var cam_back := Vector3(0, 0, 1)
 var drifting := false
 var rpm := 0.3
@@ -86,7 +90,6 @@ var click_player: AudioStreamPlayer
 var engine_player: AudioStreamPlayer
 var brake_player: AudioStreamPlayer
 var skid_player: AudioStreamPlayer
-
 func _ready() -> void:
     randomize()
     _init_cars()
@@ -266,7 +269,6 @@ func _make_click() -> AudioStreamWAV:
         var t := float(n) / float(rate)
         samples[n] = sin(TAU * 1100.0 * t) * exp(-t * 55.0) * 0.8 + (randf() * 2.0 - 1.0) * exp(-t * 120.0) * 0.3
     return _make_wav(samples, rate, false)
-
 func _new_player(stream: AudioStream, db: float) -> AudioStreamPlayer:
     var p := AudioStreamPlayer.new()
     p.stream = stream
@@ -364,7 +366,6 @@ func _on_viewport_resized() -> void:
             _build_hud()
         "result":
             _show_result()
-
 func _build_camera() -> void:
     camera_3d = Camera3D.new()
     camera_3d.position = Vector3(0, 7, 12)
@@ -517,10 +518,12 @@ func _clear_world() -> void:
     for c in world_root.get_children():
         c.queue_free()
     car = null
+    vis = null
     smoke = null
     preview_car = null
     tail_mat = null
-    wheels.clear()
+    wheel_spins.clear()
+    wheel_steers.clear()
 
 func _show_preview(id: int) -> void:
     _clear_world()
@@ -545,7 +548,6 @@ func _show_preview(id: int) -> void:
     preview_id = id
     camera_3d.position = Vector3(5.5, 2.4, 7.5)
     camera_3d.look_at(Vector3(-1.8, 0.6, 0), Vector3.UP)
-
 # ======================= ЭКРАНЫ МЕНЮ =======================
 
 func show_menu() -> void:
@@ -624,7 +626,6 @@ func _buy_car() -> void:
         show_garage()
     else:
         garage_msg.text = "Не хватает монет!"
-
 func show_garage() -> void:
     mode = "garage"
     _engine_sounds(false)
@@ -774,7 +775,9 @@ func _wheel_pos(i: int, L: float, W: float) -> Vector3:
     var sz := -1.0 if i < 2 else 1.0
     return Vector3(sx * (W * 0.5 - 0.12), 0.0, sz * L * 0.34)
 
-func _add_wheel_mesh(holder: Node3D, r: float) -> void:
+func _add_wheel_mesh(holder: Node3D, r: float) -> Node3D:
+    var spin := Node3D.new()
+    holder.add_child(spin)
     var tire := MeshInstance3D.new()
     var cm := CylinderMesh.new()
     cm.top_radius = r
@@ -784,7 +787,7 @@ func _add_wheel_mesh(holder: Node3D, r: float) -> void:
     tire.mesh = cm
     tire.material_override = _mat(Color(0.08, 0.08, 0.08))
     tire.rotation_degrees = Vector3(0, 0, 90)
-    holder.add_child(tire)
+    spin.add_child(tire)
     var hub := MeshInstance3D.new()
     var hm := CylinderMesh.new()
     hm.top_radius = r * 0.55
@@ -794,7 +797,9 @@ func _add_wheel_mesh(holder: Node3D, r: float) -> void:
     hub.mesh = hm
     hub.material_override = _mat(Color(0.75, 0.75, 0.8))
     hub.rotation_degrees = Vector3(0, 0, 90)
-    holder.add_child(hub)
+    spin.add_child(hub)
+    spin.add_child(_box_mesh(Vector3(0.34, r * 0.9, 0.07), Vector3.ZERO, _mat(Color(0.25, 0.25, 0.3))))
+    return spin
 
 func _build_car_visual(id: int, parent: Node3D) -> Dictionary:
     var cd: Dictionary = CARS[id]
@@ -840,7 +845,6 @@ func _build_car_visual(id: int, parent: Node3D) -> Dictionary:
         parent.add_child(_box_mesh(Vector3(0.35, 0.15, 0.06), Vector3(s * hx, 0.38, -L * 0.5), head))
         parent.add_child(_box_mesh(Vector3(0.35, 0.15, 0.06), Vector3(s * hx, 0.38, L * 0.5), tail_mat))
     return {"body": body_mat}
-
 func _add_coin(x: float, z: float) -> void:
     var a := Area3D.new()
     a.position = Vector3(x, 1.0, z)
@@ -879,19 +883,55 @@ func _add_obstacle(x: float, z: float) -> void:
     else:
         _static_box(Vector3(1.3, 1.3, 1.3), Vector3(x, 0.65, z), Color(0.6, 0.4, 0.2))
 
+# Трамплин: нижний край вровень с землёй, поднимается в сторону -Z (при yaw_deg = 0)
+func _add_ramp(x: float, z: float, yaw_deg: float, length: float, width: float, tilt_deg: float, c: Color) -> void:
+    var thick := 1.0
+    var t := deg_to_rad(tilt_deg)
+    var pivot := Node3D.new()
+    pivot.position = Vector3(x, 0.0, z)
+    pivot.rotation_degrees = Vector3(0.0, yaw_deg, 0.0)
+    world_root.add_child(pivot)
+    var sb := StaticBody3D.new()
+    sb.position = Vector3(0.0, length * 0.5 * sin(t) - thick * 0.5 * cos(t), 0.0)
+    sb.rotation_degrees = Vector3(tilt_deg, 0.0, 0.0)
+    var cs := CollisionShape3D.new()
+    var bs := BoxShape3D.new()
+    bs.size = Vector3(width, thick, length)
+    cs.shape = bs
+    sb.add_child(cs)
+    sb.add_child(_box_mesh(bs.size, Vector3.ZERO, _mat(c)))
+    var stripe := _mat(Color(1, 0.9, 0.2))
+    sb.add_child(_box_mesh(Vector3(0.3, 0.05, length), Vector3(-width * 0.5 + 0.3, thick * 0.5 + 0.02, 0.0), stripe))
+    sb.add_child(_box_mesh(Vector3(0.3, 0.05, length), Vector3(width * 0.5 - 0.3, thick * 0.5 + 0.02, 0.0), stripe))
+    pivot.add_child(sb)
+
 func _build_world(is_free: bool) -> void:
     if is_free:
-        _static_box(Vector3(800, 2, 800), Vector3(0, -1, 0), Color(0.78, 0.7, 0.45))
-        for i in range(28):
-            var a := randf() * TAU
-            var d := randf_range(25.0, 160.0)
-            var p := Vector3(cos(a) * d, 0.0, sin(a) * d)
-            if i % 3 == 0:
-                _static_box(Vector3(6, 0.4, 10), p + Vector3(0, 0.9, 0), Color(0.55, 0.55, 0.6), Vector3(-14, randf() * 360.0, 0))
-            else:
-                var h := randf_range(1.0, 2.5)
-                _static_box(Vector3(randf_range(2, 4), h, randf_range(2, 4)), p + Vector3(0, h * 0.5, 0), Color(0.6, 0.4, 0.25), Vector3(0, randf() * 360.0, 0))
-        return
+        _build_free_world()
+    else:
+        _build_race_world()
+
+func _build_free_world() -> void:
+    _static_box(Vector3(1600, 2, 1600), Vector3(0, -1, -300), Color(0.78, 0.7, 0.45))
+    world_root.add_child(_box_mesh(Vector3(10, 0.04, 1200), Vector3(0, 0.02, -400), _mat(Color(0.18, 0.18, 0.2))))
+    var rz := -50.0
+    for i in range(6):
+        _add_ramp(randf_range(-18.0, 18.0), rz, randf_range(-15.0, 15.0), 12.0, 7.0, randf_range(14.0, 20.0), Color(0.7, 0.55, 0.3))
+        rz -= randf_range(70.0, 110.0)
+    _add_ramp(0.0, rz - 30.0, 0.0, 26.0, 12.0, 22.0, Color(0.85, 0.35, 0.2))
+    for i in range(10):
+        var a := randf() * TAU
+        var d := randf_range(40.0, 300.0)
+        _add_ramp(cos(a) * d, sin(a) * d - 200.0, randf() * 360.0, 10.0, 6.0, randf_range(12.0, 18.0), Color(0.7, 0.55, 0.3))
+    for i in range(40):
+        var a2 := randf() * TAU
+        var d2 := randf_range(30.0, 350.0)
+        var p := Vector3(cos(a2) * d2, 0.0, sin(a2) * d2 - 200.0)
+        if absf(p.x) < 14.0 and p.z < 40.0 and p.z > -700.0:
+            continue
+        var h := randf_range(1.0, 2.5)
+        _static_box(Vector3(randf_range(2, 4), h, randf_range(2, 4)), p + Vector3(0, h * 0.5, 0), Color(0.6, 0.4, 0.25), Vector3(0, randf() * 360.0, 0))
+func _build_race_world() -> void:
     var z_min := -(ROAD_LENGTH + 400.0)
     var z_max := 100.0
     _static_box(Vector3(600, 2, z_max - z_min), Vector3(0, -1, (z_max + z_min) * 0.5), Color(0.25, 0.55, 0.25))
@@ -904,7 +944,6 @@ func _build_world(is_free: bool) -> void:
         _static_box(Vector3(0.6, 1.2, rlen), Vector3(s * 6.6, 0.6, rc), Color(0.8, 0.8, 0.85))
     _static_box(Vector3(13.8, 3.0, 0.6), Vector3(0, 1.5, r0), Color(0.8, 0.8, 0.85))
     _static_box(Vector3(13.8, 3.0, 0.6), Vector3(0, 1.5, r1), Color(0.8, 0.8, 0.85))
-    # разметка
     var xs := [-3.15, -1.05, 1.05, 3.15]
     var count_z := int((r0 - r1) / 8.0)
     var mm := MultiMesh.new()
@@ -922,7 +961,6 @@ func _build_world(is_free: bool) -> void:
     mmi.multimesh = mm
     mmi.material_override = _mat(Color(0.95, 0.95, 0.95))
     world_root.add_child(mmi)
-    # препятствия и монеты
     var z := -FIRST_ROW_Z
     while z > -ROAD_LENGTH + 15.0:
         var lane_ids := range(LANES.size())
@@ -936,7 +974,6 @@ func _build_world(is_free: bool) -> void:
         for k in range(4):
             _add_coin(coin_lane, z - 5.0 - k * 3.0)
         z -= randf_range(ROW_GAP_MIN, ROW_GAP_MAX)
-    # финиш
     world_root.add_child(_box_mesh(Vector3(12.6, 0.05, 1.5), Vector3(0, 0.06, -ROAD_LENGTH), _mat(Color(1, 1, 1))))
     var post_mat := _mat(Color(0.9, 0.1, 0.1))
     for s in [-1.0, 1.0]:
@@ -949,7 +986,6 @@ func _build_world(is_free: bool) -> void:
     fl.outline_size = 12
     fl.position = Vector3(0, 5.6, -ROAD_LENGTH + 0.25)
     world_root.add_child(fl)
-    # деревья
     for i in range(36):
         var side := -1.0 if i % 2 == 0 else 1.0
         var tree := Node3D.new()
@@ -972,47 +1008,34 @@ func _build_world(is_free: bool) -> void:
         crown.position = Vector3(0, 3.2, 0)
         tree.add_child(crown)
         world_root.add_child(tree)
+# ======================= МАШИНА И ЗАЕЗД =======================
 
 func _spawn_car() -> void:
     var cd: Dictionary = CARS[current_car]
     var r := float(cd["wheel"])
     var L := float(cd["len"])
     var W := float(cd["wid"])
-    var grip := float(cd["grip"])
-    var lv_w := float(_lv("Колёса"))
-    var lv_s := float(_lv("Подвеска"))
-    car = VehicleBody3D.new()
-    car.mass = float(cd["mass"])
-    car.center_of_mass_mode = RigidBody3D.CENTER_OF_MASS_MODE_CUSTOM
-    car.center_of_mass = Vector3(0, -0.15, 0)
-    car.linear_damp = 0.05
-    car.angular_damp = 1.0
-    car.position = Vector3(0, 1.2, 0)
+    car = CharacterBody3D.new()
+    car.position = Vector3(0, 0.3, 0)
+    car.floor_snap_length = 0.25
     var col := CollisionShape3D.new()
     var bs := BoxShape3D.new()
-    bs.size = Vector3(W - 0.1, 0.7, L)
+    bs.size = Vector3(W - 0.1, 1.0, L - 0.2)
     col.shape = bs
-    col.position = Vector3(0, 0.35, 0)
+    col.position = Vector3(0, 0.5, 0)
     car.add_child(col)
-    _build_car_visual(current_car, car)
-    wheels.clear()
+    vis = Node3D.new()
+    vis.position = Vector3(0, r, 0)
+    car.add_child(vis)
+    _build_car_visual(current_car, vis)
+    wheel_spins.clear()
+    wheel_steers.clear()
     for i in range(4):
-        var w := VehicleWheel3D.new()
-        w.position = _wheel_pos(i, L, W)
-        w.use_as_traction = true
-        w.use_as_steering = i < 2
-        w.wheel_radius = r
-        w.wheel_rest_length = 0.2
-        w.suspension_travel = 0.25
-        w.suspension_stiffness = 40.0 + 4.0 * lv_s
-        w.suspension_max_force = 8000.0
-        w.damping_compression = 0.88
-        w.damping_relaxation = 1.0
-        w.wheel_roll_influence = 0.16 - 0.02 * lv_s
-        w.wheel_friction_slip = 8.0 * grip * (0.92 + 0.04 * lv_w)
-        _add_wheel_mesh(w, r)
-        car.add_child(w)
-        wheels.append(w)
+        var holder := Node3D.new()
+        holder.position = _wheel_pos(i, L, W)
+        vis.add_child(holder)
+        wheel_spins.append(_add_wheel_mesh(holder, r))
+        wheel_steers.append(holder)
     smoke = CPUParticles3D.new()
     smoke.emitting = false
     smoke.amount = 40
@@ -1034,10 +1057,9 @@ func _spawn_car() -> void:
     smat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
     sph.material = smat
     smoke.mesh = sph
-    smoke.position = Vector3(0, 0.15, L * 0.45)
+    smoke.position = Vector3(0, 0.2, L * 0.45)
     car.add_child(smoke)
     world_root.add_child(car)
-# ======================= ЗАЕЗД =======================
 
 func start_run(is_free: bool) -> void:
     mode = "playing"
@@ -1045,7 +1067,8 @@ func start_run(is_free: bool) -> void:
     run_time = 0.0
     run_coins = 0
     speed = 0.0
-    flip_timer = 0.0
+    yaw = 0.0
+    steer_vis = 0.0
     gas_amt = 0.0
     brake_amt = 0.0
     skid_amt = 0.0
@@ -1106,12 +1129,12 @@ func _build_hud() -> void:
     speed_label.size = Vector2(190, 44)
     speed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
     gauge.add_child(speed_label)
+    # Слева: газ и тормоз. Справа: повороты.
+    _make_pad("gas", "ГАЗ", Rect2(30, vp.y - 300, 210, 135), Color(0.3, 1, 0.3, 0.35))
+    _make_pad("brake", "СТОП", Rect2(30, vp.y - 150, 210, 120), Color(1, 0.3, 0.3, 0.35))
     var base := Color(1, 1, 1, 0.35)
-    _make_pad("left", "<", Rect2(30, vp.y - 170, 130, 140), base)
-    _make_pad("right", ">", Rect2(180, vp.y - 170, 130, 140), base)
-    _make_pad("brake", "СТОП", Rect2(vp.x - 360, vp.y - 170, 160, 140), Color(1, 0.3, 0.3, 0.35))
-    _make_pad("gas", "ГАЗ", Rect2(vp.x - 180, vp.y - 190, 150, 160), Color(0.3, 1, 0.3, 0.35))
-
+    _make_pad("left", "<", Rect2(vp.x - 330, vp.y - 170, 140, 140), base)
+    _make_pad("right", ">", Rect2(vp.x - 170, vp.y - 170, 140, 140), base)
 func _draw_gauge() -> void:
     var c := gauge.size / 2.0
     var r := minf(c.x, c.y) - 6.0
@@ -1144,7 +1167,9 @@ func _process(delta: float) -> void:
         _update_audio()
         _update_hud()
         for c in get_tree().get_nodes_in_group("coins"):
-            c.rotation.y += delta * 3.0
+            var cn := c as Node3D
+            if cn != null:
+                cn.rotation.y += delta * 3.0
     elif is_instance_valid(preview_car):
         preview_car.rotation.y += delta * 0.6
 
@@ -1154,12 +1179,11 @@ func _physics_process(delta: float) -> void:
     if not free_mode:
         run_time += delta
     _drive(delta)
-    if car.global_transform.basis.y.y < 0.25:
-        flip_timer += delta
-    else:
-        flip_timer = 0.0
-    if flip_timer > 2.0 or car.global_position.y < -20.0:
-        _respawn_car(false)
+    var p := car.global_position
+    if p.y < -20.0:
+        _respawn_car(true)
+    if free_mode and (absf(p.x) > 780.0 or p.z > 480.0 or p.z < -1080.0):
+        _respawn_car(true)
     if tail_mat != null:
         tail_mat.emission_energy_multiplier = 4.0 if _pressed("brake") else 0.5
     _update_camera(delta)
@@ -1167,8 +1191,9 @@ func _physics_process(delta: float) -> void:
         _finish()
 
 # ======================= ЕЗДА =======================
-# Газ отпущен -> тяги и тормоза нет, машина катится (накат).
-# Тормоз включается ТОЛЬКО кнопкой "СТОП" / S.
+# Отпустил газ: тяги и тормоза нет, машина катится (накат).
+# Тормоз включается только кнопкой "СТОП" / S.
+# Тормоз + поворот на скорости = дрифт.
 
 func _drive(delta: float) -> void:
     var gas := _pressed("gas")
@@ -1178,59 +1203,145 @@ func _drive(delta: float) -> void:
         steer_in += 1.0
     if _pressed("right"):
         steer_in -= 1.0
-    var bs := car.global_transform.basis
-    var vel := car.linear_velocity
-    speed = vel.dot(-bs.z)
-    var kmh := absf(speed) * 3.6
-    var m := car.mass
-    var eng := _car_f(current_car, "engine") * (0.85 + 0.06 * float(_lv("Мотор")))
-    var vmax := (150.0 / 3.6) * _car_f(current_car, "speed") * (0.88 + 0.06 * float(_lv("Скорость")))
+
+    var id := current_car
+    var lv_m := float(_lv("Мотор"))
+    var lv_s := float(_lv("Скорость"))
     var lv_b := float(_lv("Тормоза"))
     var lv_w := float(_lv("Колёса"))
+    var lv_p := float(_lv("Подвеска"))
+    var eng := _car_f(id, "engine") * (0.85 + 0.06 * lv_m)
+    var vmax := (150.0 / 3.6) * _car_f(id, "speed") * (0.88 + 0.06 * lv_s)
+    var accel := 7.0 * eng
+    var brake_dec := 14.0 * (0.85 + 0.07 * lv_b)
+    var grip := 9.0 * _car_f(id, "grip") * (0.88 + 0.04 * lv_w + 0.03 * lv_p)
+    if free_mode:
+        grip *= 0.8
 
-    var force := 0.0
-    var brake_val := 0.0
-    if brk:
-        if speed > 1.0:
-            brake_val = m * 0.03 * (0.75 + 0.1 * lv_b)
-        elif speed > -8.0:
-            force = -m * 0.04 * eng
-    elif gas:
-        if speed < -1.0:
-            brake_val = m * 0.03
+    var on_floor := car.is_on_floor()
+    var vel := car.velocity
+    var vh := Vector3(vel.x, 0.0, vel.z)
+
+    # Руль поворачивает корпус
+    var fwd_pre := vh.dot(-Basis(Vector3.UP, yaw).z)
+    var turn := steer_in * (2.2 / (1.0 + absf(fwd_pre) * 3.6 / 70.0))
+    turn *= clampf(absf(fwd_pre) / 5.0, 0.0, 1.0)
+    if fwd_pre < 0.0:
+        turn = -turn
+    var drift_cmd := brk and steer_in != 0.0 and fwd_pre > 8.0 and on_floor
+    if drift_cmd:
+        turn *= 1.4
+    if not on_floor:
+        turn *= 0.25
+    yaw += turn * delta
+    var bas := Basis(Vector3.UP, yaw)
+    var f := -bas.z
+    var rt := bas.x
+    var fwd := vh.dot(f)
+    var lat := vh.dot(rt)
+    var slip := absf(lat)
+
+    # Газ, накат, тормоз, сцепление
+    var new_fwd := fwd
+    if on_floor:
+        if brk:
+            if fwd > 0.5:
+                var bd := brake_dec
+                if drift_cmd:
+                    bd *= 0.3
+                new_fwd = maxf(fwd - bd * delta, 0.0)
+            else:
+                new_fwd = maxf(fwd - 0.6 * accel * delta, -10.0)
+        elif gas:
+            if fwd < -0.5:
+                new_fwd = minf(fwd + brake_dec * delta, 0.0)
+            else:
+                var ratio := clampf(fwd / vmax, 0.0, 1.0)
+                new_fwd = fwd + accel * (1.0 - ratio * ratio) * delta
         else:
-            var ratio := clampf(speed / vmax, 0.0, 1.0)
-            force = m * 0.05 * eng * (1.0 - ratio * ratio * ratio)
-    car.engine_force = force
-    car.brake = brake_val
+            new_fwd = move_toward(fwd, 0.0, (0.6 + 0.0003 * fwd * fwd) * delta)
+        var g := grip
+        if drift_cmd:
+            g = 1.3
+        lat = lat * exp(-g * delta)
+    else:
+        new_fwd = move_toward(fwd, 0.0, 0.1 * delta)
 
-    var max_steer := maxf(0.55 / (1.0 + kmh / 80.0), 0.12)
-    car.steering = move_toward(car.steering, steer_in * max_steer, delta * (3.0 + 0.4 * lv_w))
+    # Скорость по склону и гравитация (трамплины)
+    var nh := f * new_fwd + rt * lat
+    var vy := vel.y
+    if on_floor:
+        var fn := car.get_floor_normal()
+        if fn.y > 0.2:
+            vy = -(fn.x * nh.x + fn.z * nh.z) / fn.y - 1.5
+        else:
+            vy = -1.5
+    else:
+        vy -= GRAVITY * delta
+    car.velocity = Vector3(nh.x, vy, nh.z)
+    car.rotation.y = yaw
+    car.move_and_slide()
 
-    # прижимная сила для устойчивости
-    car.apply_central_force(-bs.y * speed * speed * 1.0)
+    # Удар о стену или препятствие
+    for i in range(car.get_slide_collision_count()):
+        var hit := car.get_slide_collision(i)
+        var n := hit.get_normal()
+        if absf(n.y) < 0.5:
+            var nflat := Vector3(n.x, 0.0, n.z)
+            if nflat.length() > 0.01 and -nh.dot(nflat.normalized()) > 3.0:
+                car.velocity = Vector3(car.velocity.x * 0.6, car.velocity.y, car.velocity.z * 0.6)
+                break
 
-    # дрифт и дым
-    var lat := vel.dot(bs.x)
+    var vh2 := Vector3(car.velocity.x, 0.0, car.velocity.z)
+    speed = vh2.dot(f)
+    var kmh := absf(speed) * 3.6
+    var floor_now := car.is_on_floor()
+
+    # Наклон кузова
+    var tp := 0.0
+    var tr := 0.0
+    if floor_now:
+        var n2 := car.get_floor_normal()
+        var ny := maxf(n2.y, 0.2)
+        tp = atan(-(n2.x * f.x + n2.z * f.z) / ny)
+        tr = atan(-(n2.x * rt.x + n2.z * rt.z) / ny)
+    else:
+        tp = atan2(car.velocity.y, maxf(vh2.length(), 6.0))
+    tr += steer_in * clampf(kmh / 120.0, 0.0, 1.0) * 0.06
+    var k := minf(1.0, delta * 8.0)
+    vis.rotation.x = lerp_angle(vis.rotation.x, tp, k)
+    vis.rotation.z = lerp_angle(vis.rotation.z, tr, k)
+
+    # Колёса
+    var wr := _car_f(id, "wheel")
+    steer_vis = lerpf(steer_vis, steer_in * 0.45, minf(1.0, delta * 10.0))
+    for i in range(wheel_spins.size()):
+        var sp: Node3D = wheel_spins[i]
+        sp.rotation.x -= (speed / wr) * delta
+        if i < 2:
+            var stw: Node3D = wheel_steers[i]
+            stw.rotation.y = steer_vis
+
+    # Дрифт, дым и звук
     var target_skid := 0.0
-    if wheels.size() > 2 and wheels[2].is_in_contact():
-        target_skid = clampf((absf(lat) - 1.5) / 5.0, 0.0, 1.0)
+    if floor_now:
+        target_skid = clampf((slip - 1.5) / 5.0, 0.0, 1.0)
     skid_amt = move_toward(skid_amt, target_skid, delta * 4.0)
-    drifting = absf(lat) > 3.0
-    if smoke != null:
-        smoke.emitting = drifting or (brk and kmh > 40.0)
-
+    drifting = slip > 3.0 or drift_cmd
+    if is_instance_valid(smoke):
+        smoke.emitting = drifting or (brk and kmh > 40.0 and floor_now)
     gas_amt = move_toward(gas_amt, 1.0 if gas else 0.0, delta * 3.0)
     brake_amt = clampf(speed / 20.0, 0.0, 1.0) if brk else 0.0
     rpm = lerpf(rpm, clampf(absf(speed) / vmax, 0.05, 1.0), delta * 5.0)
-
 # ======================= КАМЕРА, СБРОС, ФИНИШ =======================
 
 func _snap_camera() -> void:
     if not is_instance_valid(car):
         return
-    camera_3d.global_position = car.global_position + Vector3(0, 3.4, 8.5)
-    camera_3d.look_at(car.global_position + Vector3(0, 1.0, -4.0), Vector3.UP)
+    var b := Basis(Vector3.UP, yaw).z
+    cam_back = Vector3(b.x, 0.0, b.z)
+    camera_3d.global_position = car.global_position + cam_back * 8.5 + Vector3(0, 3.4, 0)
+    camera_3d.look_at(car.global_position + Vector3(0, 1.0, 0) - cam_back * 4.0, Vector3.UP)
 
 func _update_camera(delta: float) -> void:
     var pos := car.global_position
@@ -1253,17 +1364,14 @@ func _respawn_car(reset: bool) -> void:
         return
     var p := car.global_position
     if reset:
-        p = Vector3(0, 1.2, 0)
+        p = Vector3(0, 0.3, 0)
+        yaw = 0.0
     else:
-        p.y = 1.5
-        if not free_mode:
-            p.x = clampf(p.x, -4.5, 4.5)
-    car.linear_velocity = Vector3.ZERO
-    car.angular_velocity = Vector3.ZERO
-    car.steering = 0.0
-    car.global_transform = Transform3D(Basis.IDENTITY, p)
-    flip_timer = 0.0
-    cam_back = Vector3(0, 0, 1)
+        p.y += 1.0
+    car.velocity = Vector3.ZERO
+    car.global_position = p
+    car.rotation.y = yaw
+    speed = 0.0
     _snap_camera()
 
 func _finish() -> void:
@@ -1276,8 +1384,8 @@ func _finish() -> void:
     coins += total
     last_result = {"time": run_time, "collected": run_coins, "base": base, "bonus": bonus, "total": total}
     _save_game()
-    car.engine_force = 0.0
-    car.brake = car.mass * 0.03
+    if is_instance_valid(smoke):
+        smoke.emitting = false
     _engine_sounds(false)
     mode = "result"
     _update_music()
