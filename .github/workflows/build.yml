@@ -1,0 +1,13 @@
+name: Build Android APK
+on: [workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile Android APK
+        uses: abarrak/godot-action@v2
+        with:
+          name: drive3d-android
+          preset: Android
+          
