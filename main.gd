@@ -4,12 +4,19 @@ extends Node3D
 const ROAD_LENGTH := 300.0
 const LANES := [-4.2, -2.1, 0.0, 2.1, 4.2]
 const FIRST_ROW_Z := 40.0
-const ROW_GAP_MIN := 20.0
-const ROW_GAP_MAX := 30.0
-const OBSTACLE_CHANCE := 0.5
+const OFFROAD_X := 6.2           # дальше этого по X от центра дороги — проигрыш
 const SHADOWS := true
 const START_COINS := 0          # стартовые монеты (для проверки гаража можно поставить 5000)
 const SAVE_PATH := "user://save.json"
+
+const DIFFICULTY_NAMES := ["Легко", "Средне", "Сложно"]
+# size — размер коробки; min/max — сколько полос из 5 перекрыто в ряду;
+# gap_min/gap_max — расстояние между рядами; reward — множитель наград
+const DIFFICULTY_SETTINGS := {
+    "Легко": {"size": Vector3(1.0, 1.0, 1.0), "min": 1, "max": 2, "gap_min": 28.0, "gap_max": 40.0, "reward": 0.7},
+    "Средне": {"size": Vector3(1.3, 1.2, 1.3), "min": 2, "max": 3, "gap_min": 22.0, "gap_max": 32.0, "reward": 1.0},
+    "Сложно": {"size": Vector3(1.6, 1.4, 1.6), "min": 4, "max": 4, "gap_min": 20.0, "gap_max": 30.0, "reward": 1.5},
+}
 
 const UPGRADE_NAMES := ["Мотор", "Подвеска", "Колёса", "Скорость", "Тормоза"]
 const UPGRADE_INFO := {
@@ -24,6 +31,7 @@ var coins := START_COINS
 var finishes := 0
 var levels := {"Мотор": 1, "Подвеска": 1, "Колёса": 1, "Скорость": 1, "Тормоза": 1}
 var selected_upgrade := "Мотор"
+var difficulty := "Средне"
 var mode := "menu"
 var car: VehicleBody3D
 var wheels: Array[VehicleWheel3D] = []
@@ -57,7 +65,7 @@ func _ready() -> void:
 # ======================= СОХРАНЕНИЕ =======================
 
 func _save_game() -> void:
-    var data := {"coins": coins, "finishes": finishes, "levels": levels}
+    var data := {"coins": coins, "finishes": finishes, "levels": levels, "difficulty": difficulty}
     var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
     if f == null:
         return
@@ -76,6 +84,9 @@ func _load_game() -> void:
         return
     coins = int(parsed.get("coins", 0))
     finishes = int(parsed.get("finishes", 0))
+    var saved_diff := str(parsed.get("difficulty", "Средне"))
+    if DIFFICULTY_SETTINGS.has(saved_diff):
+        difficulty = saved_diff
     var saved_levels = parsed.get("levels", {})
     if typeof(saved_levels) == TYPE_DICTIONARY:
         for n in UPGRADE_NAMES:
@@ -240,8 +251,8 @@ func _physics_process(delta: float) -> void:
     if p.y < -15.0:
         finish_run(false, "Ты улетел с трассы!")
         return
-    if absf(p.x) > 150.0:
-        finish_run(false, "Ты уехал за пределы карты!")
+    if absf(p.x) > OFFROAD_X:
+        finish_run(false, "Ты выехал с трассы!")
         return
     if car.global_transform.basis.y.y < 0.3:
         flip_timer += delta
@@ -299,7 +310,6 @@ func _on_car_body_entered(body: Node) -> void:
     # speed — скорость ДО удара (после столкновения машина уже почти стоит)
     if body.is_in_group("obstacle") and speed > 5.0:
         call_deferred("finish_run", false, "Ты врезался в препятствие!")
-
 # ======================= ИНТЕРФЕЙС =======================
 
 func _clear_ui() -> void:
@@ -368,13 +378,26 @@ func show_menu() -> void:
     _label(ui, "DRIVE 3D", Vector2(80, 55), 58, Color(0.25, 0.75, 1.0))
     _label(ui, "Пустыня • препятствия • гараж", Vector2(85, 125), 25)
     _label(ui, "Монеты: %d     Финиши: %d/3" % [coins, finishes % 3], Vector2(85, 175), 25, Color.GOLD)
-    _button(ui, "ИГРАТЬ", Vector2(90, 250), Vector2(300, 65), start_run)
-    _button(ui, "ГАРАЖ / УЛУЧШЕНИЯ", Vector2(90, 335), Vector2(300, 65), show_upgrades)
-    _label(ui, "Поверни телефон горизонтально", Vector2(85, 430), 21)
+    _label(ui, "Сложность:", Vector2(90, 222), 22)
+    for i in range(DIFFICULTY_NAMES.size()):
+        var dn: String = DIFFICULTY_NAMES[i]
+        var db := _button(ui, dn, Vector2(90 + i * 105, 255), Vector2(95, 50), func(): _set_difficulty(dn))
+        db.add_theme_font_size_override("font_size", 20)
+        if dn == difficulty:
+            db.text = "● " + dn
+            db.add_theme_color_override("font_color", Color.GOLD)
+    _button(ui, "ИГРАТЬ", Vector2(90, 325), Vector2(300, 65), start_run)
+    _button(ui, "ГАРАЖ / УЛУЧШЕНИЯ", Vector2(90, 405), Vector2(300, 65), show_upgrades)
+    _label(ui, "Поверни телефон горизонтально", Vector2(85, 490), 21)
     camera_3d.fov = 55.0
     camera_3d.position = Vector3(4.2, 2.0, 7.0)
     camera_3d.look_at(Vector3(-1.6, 0.7, 0.0), Vector3.UP)
     _make_menu_world()
+
+func _set_difficulty(name: String) -> void:
+    difficulty = name
+    _save_game()
+    show_menu()
 
 func show_upgrades() -> void:
     mode = "upgrades"
@@ -485,6 +508,7 @@ func _touch_pad(action: String, text: String, rect: Rect2) -> void:
     touch_zones[action] = rect
     touch_pads[action] = pad
     pad.modulate.a = 0.6
+
 # ======================= ПРИМИТИВЫ =======================
 
 func _mat(c: Color, metallic: float = 0.0, rough: float = 0.8, emission: float = 0.0) -> StandardMaterial3D:
@@ -521,7 +545,6 @@ func _cyl(parent: Node3D, pos: Vector3, radius: float, height: float, mat: Mater
     instance.material_override = mat
     parent.add_child(instance)
     return instance
-
 # ======================= МИР =======================
 
 func _make_sky_and_light() -> void:
@@ -609,20 +632,28 @@ func _make_environment() -> void:
     _make_finish()
 
 func _make_obstacles() -> void:
+    var cfg: Dictionary = DIFFICULTY_SETTINGS[difficulty]
+    var size: Vector3 = cfg["size"]
     var crate_colors := [Color(0.9, 0.45, 0.1), Color(0.8, 0.2, 0.15), Color(0.9, 0.7, 0.15)]
+    var free_idx := 2          # для сложного: единственный свободный проход (индекс полосы)
     var z := -FIRST_ROW_Z
     while z > -(ROAD_LENGTH - 25.0):
-        var free: Array = LANES.duplicate()
-        free.shuffle()
-        var blocked := 0
-        for lane in free:
-            if blocked >= 3:
-                break
-            if randf() < OBSTACLE_CHANCE:
-                var c: Color = crate_colors[randi() % crate_colors.size()]
-                _static_box(Vector3(lane, 0.7, z), Vector3(1.6, 1.4, 1.6), _mat(c, 0.0, 0.7), "obstacle")
-                blocked += 1
-        z -= randf_range(ROW_GAP_MIN, ROW_GAP_MAX)
+        var count: int = randi_range(int(cfg["min"]), int(cfg["max"]))
+        var blocked_idx: Array = []
+        if count >= LANES.size() - 1:
+            # ОДИН проход на ряд; следующий проход не дальше 2 полос от прошлого
+            free_idx = clampi(free_idx + randi_range(-2, 2), 0, LANES.size() - 1)
+            for i in range(LANES.size()):
+                if i != free_idx:
+                    blocked_idx.append(i)
+        else:
+            var idxs: Array = range(LANES.size())
+            idxs.shuffle()
+            blocked_idx = idxs.slice(0, count)
+        for i in blocked_idx:
+            var c: Color = crate_colors[randi() % crate_colors.size()]
+            _static_box(Vector3(LANES[i], size.y / 2.0, z), size, _mat(c, 0.0, 0.7), "obstacle")
+        z -= randf_range(float(cfg["gap_min"]), float(cfg["gap_max"]))
 
 func _make_finish() -> void:
     var z := -ROAD_LENGTH
@@ -728,15 +759,16 @@ func finish_run(success: bool, reason: String) -> void:
         dist = mini(dist, int(ROAD_LENGTH))
         car.engine_force = 0.0
         car.brake = 30.0
+    var mult: float = float(DIFFICULTY_SETTINGS[difficulty]["reward"])
     var reward := 0
     var bonus := 0
     if success:
         finishes += 1
-        reward = 600
+        reward = int(600.0 * mult)
         if finishes % 3 == 0:
-            bonus = 1500
+            bonus = int(1500.0 * mult)
     else:
-        reward = int(dist * 1.5)
+        reward = int(float(dist) * 1.5 * mult)
     coins += reward + bonus
     last_result = {"success": success, "reason": reason, "dist": dist, "reward": reward, "bonus": bonus}
     held.clear()
@@ -755,7 +787,7 @@ func _show_result() -> void:
     _label_c(title, y, 64, title_color)
     if not ok:
         _label_c(str(last_result.get("reason", "")), y + 85.0, 28)
-    _label_c("Проехал: %d м" % int(last_result.get("dist", 0)), y + 135.0, 28)
+    _label_c("Сложность: %s   •   Проехал: %d м" % [difficulty, int(last_result.get("dist", 0))], y + 135.0, 28)
     var reward: int = int(last_result.get("reward", 0))
     var bonus: int = int(last_result.get("bonus", 0))
     var line := "Награда: +%d монет" % reward
