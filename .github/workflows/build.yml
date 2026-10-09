@@ -1,13 +1,61 @@
 name: Build Android APK
-on: [workflow_dispatch]
+
+on:
+  workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: barichello/godot-ci:4.3
     steps:
       - uses: actions/checkout@v4
-      - name: Compile Android APK
-        uses: abarrak/godot-action@v2
+
+      - name: Setup Godot
+        run: |
+          mkdir -p ~/.local/share/godot/export_templates ~/.config/godot
+          mv /root/.local/share/godot/export_templates/4.3.stable ~/.local/share/godot/export_templates/4.3.stable
+          keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android -keystore /root/debug.keystore -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999 -deststoretype pkcs12
+          for f in editor_settings-4.tres editor_settings-4.3.tres; do
+            cat > ~/.config/godot/$f <<'EOF'
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "/usr/lib/android-sdk"
+          export/android/debug_keystore = "/root/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOF
+          done
+
+      - name: Create export preset
+        run: |
+          cat > export_presets.cfg <<'EOF'
+          [preset.0]
+
+          name="Android"
+          platform="Android"
+          runnable=true
+          export_filter="all_resources"
+          export_path="build/drive3d.apk"
+
+          [preset.0.options]
+
+          gradle_build/use_gradle_build=false
+          package/unique_name="com.example.drive3d"
+          package/name="DRIVE3D"
+          architectures/arm64-v8a=true
+          architectures/armeabi-v7a=false
+          screen/immersive_mode=true
+          EOF
+
+      - name: Export APK
+        run: |
+          mkdir -p build
+          godot --headless --verbose --import || true
+          godot --headless --verbose --export-debug "Android" build/drive3d.apk
+
+      - uses: actions/upload-artifact@v4
         with:
-          name: drive3d-android
-          preset: Android
-          
+          name: DRIVE3D-Android
+          path: build/drive3d.apk
