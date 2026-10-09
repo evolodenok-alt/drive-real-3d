@@ -193,9 +193,9 @@ func _refresh_upgrade_detail() -> void:
         return
     var level: int = levels[selected_upgrade]
     if level >= 5:
-        upgrade_detail.text = "%s\\nУровень %d — максимум" % [selected_upgrade, level]
+        upgrade_detail.text = "%s\nУровень %d — максимум" % [selected_upgrade, level]
     else:
-        upgrade_detail.text = "%s\\nУр. %d → %d\\nЦена: %d монет" % [selected_upgrade, level, level + 1, _upgrade_cost(level)]
+        upgrade_detail.text = "%s\nУр. %d → %d\nЦена: %d монет" % [selected_upgrade, level, level + 1, _upgrade_cost(level)]
 
 func buy_upgrade() -> void:
     var level: int = levels[selected_upgrade]
@@ -261,7 +261,7 @@ func _make_environment() -> void:
     for side in [-1, 1]:
         for i in range(25):
             var z := randf_range(0, ROAD_LENGTH)
-            var x := side * randf_range(10, 24)
+            var x: float = side * randf_range(10, 24)
             _box(world_root, Vector3(x, 0.8, z), Vector3(0.55, 1.6, 0.55), Color(0.32, 0.2, 0.1))
             var crown := _mesh_instance(world_root, Vector3(x, 2.2, z), Color(0.12, randf_range(0.28, 0.48), 0.1), "sphere")
             crown.scale = Vector3(1.5, 2.0, 1.5)
