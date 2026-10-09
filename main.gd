@@ -1,6 +1,6 @@
 extends Node3D
 
-# ======= ЭТАП 1: маленькая версия =======
+# ======= ЭТАП 2: езда, гараж, сохранение =======
 const ROAD_LENGTH := 300.0
 const LANES := [-4.2, -2.1, 0.0, 2.1, 4.2]
 const FIRST_ROW_Z := 40.0
@@ -8,7 +8,22 @@ const ROW_GAP_MIN := 20.0
 const ROW_GAP_MAX := 30.0
 const OBSTACLE_CHANCE := 0.5
 const SHADOWS := true
+const START_COINS := 0          # стартовые монеты (для проверки гаража можно поставить 5000)
+const SAVE_PATH := "user://save.json"
 
+const UPGRADE_NAMES := ["Мотор", "Подвеска", "Колёса", "Скорость", "Тормоза"]
+const UPGRADE_INFO := {
+    "Мотор": "Сильнее разгон",
+    "Подвеска": "Устойчивее в поворотах",
+    "Колёса": "Лучше сцепление и руление",
+    "Скорость": "Выше максимальная скорость",
+    "Тормоза": "Короче тормозной путь",
+}
+
+var coins := START_COINS
+var finishes := 0
+var levels := {"Мотор": 1, "Подвеска": 1, "Колёса": 1, "Скорость": 1, "Тормоза": 1}
+var selected_upgrade := "Мотор"
 var mode := "menu"
 var car: VehicleBody3D
 var wheels: Array[VehicleWheel3D] = []
@@ -26,14 +41,52 @@ var touch_pads := {}
 var last_result := {}
 var status_label: Label
 var speed_label: Label
+var coins_label: Label
+var debug_label: Label
+var upgrade_detail: Label
 
 func _ready() -> void:
     randomize()
+    _load_game()
     _setup_screen()
     _build_camera()
     get_viewport().size_changed.connect(_on_viewport_resized)
     _update_camera_aspect()
     show_menu()
+
+# ======================= СОХРАНЕНИЕ =======================
+
+func _save_game() -> void:
+    var data := {"coins": coins, "finishes": finishes, "levels": levels}
+    var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
+    if f == null:
+        return
+    f.store_string(JSON.stringify(data))
+    f.close()
+
+func _load_game() -> void:
+    if not FileAccess.file_exists(SAVE_PATH):
+        return
+    var f := FileAccess.open(SAVE_PATH, FileAccess.READ)
+    if f == null:
+        return
+    var parsed = JSON.parse_string(f.get_as_text())
+    f.close()
+    if typeof(parsed) != TYPE_DICTIONARY:
+        return
+    coins = int(parsed.get("coins", 0))
+    finishes = int(parsed.get("finishes", 0))
+    var saved_levels = parsed.get("levels", {})
+    if typeof(saved_levels) == TYPE_DICTIONARY:
+        for n in UPGRADE_NAMES:
+            if saved_levels.has(n):
+                levels[n] = clampi(int(saved_levels[n]), 1, 5)
+
+func _notification(what: int) -> void:
+    if what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_APPLICATION_PAUSED:
+        _save_game()
+
+# ======================= ЭКРАН =======================
 
 func _setup_screen() -> void:
     var window := get_window()
@@ -58,6 +111,8 @@ func _on_viewport_resized() -> void:
     match mode:
         "menu":
             show_menu()
+        "upgrades":
+            show_upgrades()
         "playing":
             _build_hud()
         "result":
@@ -143,9 +198,14 @@ func _physics_process(delta: float) -> void:
     var left := _pressed("left")
     var right := _pressed("right")
 
-    var engine_max := 42.0
-    var max_speed := 38.0
-    var brake_max := 22.0
+    # Будим машину, если она "уснула" (из-за этого она раньше не ехала)
+    if gas or brake or left or right:
+        car.sleeping = false
+
+    var engine_max: float = 42.0 + float(levels["Мотор"] - 1) * 7.0
+    var max_speed: float = 38.0 + float(levels["Скорость"] - 1) * 4.5 + float(levels["Мотор"] - 1) * 1.5
+    var brake_max: float = 22.0 + float(levels["Тормоза"] - 1) * 4.0
+    var steer_rate: float = 3.0 + float(levels["Колёса"] - 1) * 0.3
 
     var p := car.global_position
     var fwd := -car.global_transform.basis.z
@@ -175,7 +235,7 @@ func _physics_process(delta: float) -> void:
         steer_in -= 1.0
     var speed_factor := clampf(absf(fwd_speed) / max_speed, 0.0, 1.0)
     var max_steer := lerpf(0.55, 0.16, speed_factor)
-    car.steering = move_toward(car.steering, steer_in * max_steer, delta * 3.0)
+    car.steering = move_toward(car.steering, steer_in * max_steer, delta * steer_rate)
 
     if p.y < -15.0:
         finish_run(false, "Ты улетел с трассы!")
@@ -195,7 +255,7 @@ func _physics_process(delta: float) -> void:
         finish_run(true, "")
 
 func _process(delta: float) -> void:
-    if mode == "menu":
+    if mode == "menu" or mode == "upgrades":
         if is_instance_valid(preview_car):
             preview_car.rotation.y += delta * 0.45
         return
@@ -224,6 +284,14 @@ func _process(delta: float) -> void:
         status_label.text = "До финиша: %d м" % int(maxf(0.0, ROAD_LENGTH + pos.z))
     if is_instance_valid(speed_label):
         speed_label.text = "%d км/ч" % int(speed * 3.6)
+    if is_instance_valid(coins_label):
+        coins_label.text = "Монеты: %d  |  Финиши: %d/3" % [coins, finishes % 3]
+    if is_instance_valid(debug_label):
+        var contact := 0
+        for w in wheels:
+            if w.is_in_contact():
+                contact += 1
+        debug_label.text = "колёса на земле: %d/4" % contact
 
 func _on_car_body_entered(body: Node) -> void:
     if mode != "playing" or not is_instance_valid(car):
@@ -297,13 +365,67 @@ func show_menu() -> void:
     var vp := _vp()
     _dim(Rect2(0, 0, 520, vp.y), 0.35)
     _label(ui, "DRIVE 3D", Vector2(80, 55), 58, Color(0.25, 0.75, 1.0))
-    _label(ui, "Пустыня • препятствия", Vector2(85, 125), 25)
+    _label(ui, "Пустыня • препятствия • гараж", Vector2(85, 125), 25)
+    _label(ui, "Монеты: %d     Финиши: %d/3" % [coins, finishes % 3], Vector2(85, 175), 25, Color.GOLD)
     _button(ui, "ИГРАТЬ", Vector2(90, 250), Vector2(300, 65), start_run)
-    _label(ui, "Поверни телефон горизонтально", Vector2(85, 340), 21)
+    _button(ui, "ГАРАЖ / УЛУЧШЕНИЯ", Vector2(90, 335), Vector2(300, 65), show_upgrades)
+    _label(ui, "Поверни телефон горизонтально", Vector2(85, 430), 21)
     camera_3d.fov = 55.0
     camera_3d.position = Vector3(4.2, 2.0, 7.0)
     camera_3d.look_at(Vector3(-1.6, 0.7, 0.0), Vector3.UP)
     _make_menu_world()
+
+func show_upgrades() -> void:
+    mode = "upgrades"
+    held.clear()
+    touches.clear()
+    _clear_ui()
+    var vp := _vp()
+    _dim(Rect2(0, 0, 960, vp.y), 0.6)
+    _label(ui, "ГАРАЖ — УЛУЧШЕНИЯ", Vector2(70, 35), 42, Color(0.25, 0.75, 1.0))
+    _label(ui, "Монеты: %d" % coins, Vector2(75, 90), 27, Color.GOLD)
+    for i in range(UPGRADE_NAMES.size()):
+        var upgrade_name: String = UPGRADE_NAMES[i]
+        _button(ui, "%s  •  Ур. %d" % [upgrade_name, levels[upgrade_name]], Vector2(70, 145 + i * 65), Vector2(330, 52), func(): _select_upgrade(upgrade_name))
+    upgrade_detail = _label(ui, "", Vector2(450, 170), 24, Color.GOLD)
+    _button(ui, "УЛУЧШИТЬ", Vector2(450, 330), Vector2(270, 60), buy_upgrade)
+    _button(ui, "НАЗАД", Vector2(70, 535), Vector2(220, 55), show_menu)
+    _refresh_upgrade_detail()
+
+func _select_upgrade(upgrade_name: String) -> void:
+    selected_upgrade = upgrade_name
+    _refresh_upgrade_detail()
+
+func _upgrade_cost(level: int) -> int:
+    if level == 1:
+        return 1000
+    if level == 2:
+        return 1800
+    return 1800 + (level - 2) * 1200
+
+func _refresh_upgrade_detail() -> void:
+    if not is_instance_valid(upgrade_detail):
+        return
+    var level: int = levels[selected_upgrade]
+    var info: String = UPGRADE_INFO[selected_upgrade]
+    if level >= 5:
+        upgrade_detail.text = "%s\n%s\nУровень %d — максимум" % [selected_upgrade, info, level]
+    else:
+        upgrade_detail.text = "%s\n%s\nУр. %d → %d\nЦена: %d монет" % [selected_upgrade, info, level, level + 1, _upgrade_cost(level)]
+
+func buy_upgrade() -> void:
+    var level: int = levels[selected_upgrade]
+    if level >= 5:
+        upgrade_detail.text = "Достигнут максимальный уровень!"
+        return
+    var cost := _upgrade_cost(level)
+    if coins < cost:
+        upgrade_detail.text = "Не хватает монет! Нужно: %d" % cost
+        return
+    coins -= cost
+    levels[selected_upgrade] = level + 1
+    _save_game()
+    show_upgrades()
 
 func start_run() -> void:
     mode = "playing"
@@ -321,6 +443,7 @@ func start_run() -> void:
     car = _create_car()
     car.position = Vector3(0, 1.1, 0)
     world_root.add_child(car)
+    _apply_upgrades()
 
 func _build_hud() -> void:
     var vp := _vp()
@@ -329,6 +452,8 @@ func _build_hud() -> void:
     touch_pads.clear()
     _clear_ui()
     status_label = _label(ui, "До финиша: %d м" % int(ROAD_LENGTH), Vector2(25, 20), 24)
+    coins_label = _label(ui, "Монеты: %d  |  Финиши: %d/3" % [coins, finishes % 3], Vector2(25, 55), 20)
+    debug_label = _label(ui, "", Vector2(25, 85), 16, Color(0.8, 0.8, 0.8))
     speed_label = _label(ui, "%d км/ч" % int(speed * 3.6), Vector2(vp.x - 200, 72), 28, Color.GOLD)
     _button(ui, "МЕНЮ", Vector2(vp.x - 170, 12), Vector2(150, 48), show_menu)
     _touch_pad("gas", "▲ ГАЗ", Rect2(30, vp.y - 260, 200, 120))
@@ -578,6 +703,7 @@ func _make_wheel(parent: VehicleBody3D, pos: Vector3, front: bool) -> void:
 func _create_car() -> VehicleBody3D:
     var v := VehicleBody3D.new()
     v.mass = 800.0
+    v.can_sleep = false
     v.center_of_mass_mode = RigidBody3D.CENTER_OF_MASS_MODE_CUSTOM
     v.center_of_mass = Vector3(0, -0.45, 0)
     v.angular_damp = 0.5
@@ -597,6 +723,17 @@ func _create_car() -> VehicleBody3D:
     v.body_entered.connect(_on_car_body_entered)
     return v
 
+# Улучшения из гаража: подвеска и колёса
+func _apply_upgrades() -> void:
+    var sus: int = levels["Подвеска"]
+    var tires: int = levels["Колёса"]
+    for w in wheels:
+        w.suspension_stiffness = 40.0 + float(sus - 1) * 5.0
+        w.damping_compression = 0.4
+        w.damping_relaxation = 0.6
+        w.wheel_roll_influence = maxf(0.03, 0.08 - float(sus - 1) * 0.012)
+        w.wheel_friction_slip = 9.0 + float(tires - 1) * 0.9
+
 # ======================= ФИНИШ =======================
 
 func finish_run(success: bool, reason: String) -> void:
@@ -608,7 +745,14 @@ func finish_run(success: bool, reason: String) -> void:
     if is_instance_valid(car):
         car.engine_force = 0.0
         car.brake = 8.0
-    last_result = {"success": success, "reason": reason}
+    var reward := 0
+    if success:
+        finishes += 1
+        if finishes % 3 == 0:
+            reward = 5000
+            coins += reward
+    last_result = {"success": success, "reason": reason, "reward": reward}
+    _save_game()
     _show_result()
 
 func _show_result() -> void:
@@ -617,10 +761,16 @@ func _show_result() -> void:
     _clear_ui()
     _dim(Rect2(Vector2.ZERO, vp), 0.45)
     if last_result.get("success", false):
+        var reward: int = last_result.get("reward", 0)
         _label_c("ФИНИШ!", 110, 58, Color(0.2, 1.0, 0.35))
         _label_c("Ты успешно добрался до финиша!", 200, 28)
+        if reward > 0:
+            _label_c("Награда за 3 финиша: +%d монет!" % reward, 255, 28, Color.GOLD)
+        else:
+            _label_c("Финиш %d/3 — до награды ещё %d" % [finishes % 3, 3 - finishes % 3], 255, 25, Color.GOLD)
     else:
         _label_c("ЗАЕЗД ОКОНЧЕН", 120, 48, Color(1, 0.2, 0.2))
         _label_c(str(last_result.get("reason", "")), 205, 27)
+    _label_c("Монеты: %d   |   Финиши: %d/3" % [coins, finishes % 3], 320, 26, Color.GOLD)
     _button(ui, "ЕЩЁ ЗАЕЗД", Vector2(cx - 245, 405), Vector2(230, 60), start_run)
     _button(ui, "ГЛАВНОЕ МЕНЮ", Vector2(cx + 15, 405), Vector2(260, 60), show_menu)
