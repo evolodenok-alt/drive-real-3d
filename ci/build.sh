@@ -112,7 +112,30 @@ screen/support_large=true
 screen/support_xlarge=true
 EOF
 # --- часть 5 ---
+if [ -f project.godot ] && ! grep -q "import_etc2_astc" project.godot; then
+if grep -q '^\[rendering\]' project.godot; then
+sed -i 's|^\[rendering\]|[rendering]\n\ntextures/vram_compression/import_etc2_astc=true|' project.godot
+else
+printf '\n[rendering]\n\ntextures/vram_compression/import_etc2_astc=true\n' >> project.godot
+fi
+fi
+printf '%s\n' "keystore/debug=\"$HOME/debug.keystore\"" "keystore/debug_user=\"androiddebugkey\"" "keystore/debug_password=\"android\"" >> export_presets.cfg
+echo "=== DIAG ==="
+echo "SDK=$SDK"
+ls "$SDK/build-tools" || true
+ls "$SDK/platform-tools" | head -5 || true
+echo "JAVA_HOME=${JAVA_HOME:-}"
+ls "${JAVA_HOME:-/nonexistent}/bin" | head -20 || true
+ls "$TPL_DIR" | head -30 || true
+cat "$HOME/.config/godot/editor_settings-4.3.tres"
+cat project.godot
+echo "=== END DIAG ==="
 mkdir -p build
 timeout 300 godot --headless --import || true
-godot --headless --export-debug "Android" "build/drive3d.apk"
+set +e
+godot --headless --verbose --export-debug "Android" "build/drive3d.apk" > build/export.log 2>&1
+CODE=$?
+set -e
+grep -i -E "error|invalid|missing|required|not found|keystore|sdk|template" build/export.log | head -60 || true
 ls -la build
+exit $CODE
