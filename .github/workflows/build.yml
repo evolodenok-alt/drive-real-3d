@@ -16,28 +16,41 @@ jobs:
           mkdir -p ~/.local/share/godot/export_templates ~/.config/godot
           [ -d ~/.local/share/godot/export_templates/4.3.stable ] || mv /root/.local/share/godot/export_templates/4.3.stable ~/.local/share/godot/export_templates/4.3.stable
           [ -f /root/debug.keystore ] || keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android -keystore /root/debug.keystore -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999 -deststoretype pkcs12
+          JAVA_PATH=$(dirname $(dirname $(readlink -f $(which java))))
+          echo "Java path: $JAVA_PATH"
           for f in editor_settings-4.tres editor_settings-4.3.tres; do
-            cat > ~/.config/godot/$f <<'EOF'
+            cat > ~/.config/godot/$f <<EOF
           [gd_resource type="EditorSettings" format=3]
 
           [resource]
           export/android/android_sdk_path = "/usr/lib/android-sdk"
+          export/android/java_sdk_path = "$JAVA_PATH"
           export/android/debug_keystore = "/root/debug.keystore"
           export/android/debug_keystore_user = "androiddebugkey"
           export/android/debug_keystore_pass = "android"
           EOF
           done
 
-      - name: Create export preset
+      - name: Prepare project and export preset
         run: |
+          sed -i '/^\[rendering\]/a textures/vram_compression/import_etc2_astc=true' project.godot
           cat > export_presets.cfg <<'EOF'
           [preset.0]
 
           name="Android"
           platform="Android"
           runnable=true
+          advanced_options=false
+          dedicated_server=false
+          custom_features=""
           export_filter="all_resources"
+          include_filter=""
+          exclude_filter=""
           export_path="build/drive3d.apk"
+          encryption_include_filters=""
+          encryption_exclude_filters=""
+          encrypt_pck=false
+          encrypt_directory=false
 
           [preset.0.options]
 
@@ -54,6 +67,7 @@ jobs:
           mkdir -p build
           godot --headless --verbose --import || true
           godot --headless --verbose --export-debug "Android" build/drive3d.apk
+          ls -la build
 
       - uses: actions/upload-artifact@v4
         with:
