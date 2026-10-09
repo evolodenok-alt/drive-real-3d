@@ -1,6 +1,19 @@
 extends Node3D
 
-const ROAD_LENGTH := 400.0
+# ======================= НАСТРОЙКИ =======================
+const ROAD_LENGTH := 600.0     # длина заезда (м)
+const ROAD_HALF := 5.0         # полуширина дороги
+const RIVER_Z := -300.0        # где река (м от старта)
+const RIVER_HALF := 14.0       # полуширина воды
+const BR_HALF := 24.0          # полудлина моста
+const WATER_Y := -1.2          # уровень воды
+const RIVER_BED := -3.6        # дно реки
+const MAP_HALF_W := 110.0      # полуширина карты
+const MAP_Z_MAX := 120.0
+const MAP_Z_MIN := -750.0
+const TERRAIN_STEP := 3.0
+const SHADOWS := true          # false = выключить тени (если телефон тормозит)
+
 const UPGRADE_NAMES := ["Мотор", "Подвеска", "Колёса", "Скорость", "Тормоза"]
 const UPGRADE_INFO := {
     "Мотор": "Сильнее разгон",
@@ -10,15 +23,12 @@ const UPGRADE_INFO := {
     "Тормоза": "Короче тормозной путь",
 }
 
-const SHADOWS := true          # false = выключить тени (если телефон тормозит)
-const TERRAIN_HALF_W := 96.0
-
-# Препятствия: полосы по X и настройки генерации
-const LANES := [-4.8, -2.4, 0.0, 2.4, 4.8]
-const FIRST_ROW_Z := 45.0
-const ROW_GAP_MIN := 20.0
-const ROW_GAP_MAX := 30.0
-const OBSTACLE_CHANCE := 0.55
+# Препятствия
+const LANES := [-4.2, -2.1, 0.0, 2.1, 4.2]
+const FIRST_ROW_Z := 50.0
+const ROW_GAP_MIN := 22.0
+const ROW_GAP_MAX := 32.0
+const OBSTACLE_CHANCE := 0.5
 
 var coins := 0
 var finishes := 0
@@ -26,6 +36,7 @@ var levels := {"Мотор": 1, "Подвеска": 1, "Колёса": 1, "Ск�
 var selected_upgrade := "Мотор"
 var mode := "menu"
 var car: VehicleBody3D
+var car_dust: CPUParticles3D
 var wheels: Array[VehicleWheel3D] = []
 var preview_car: Node3D
 var camera_3d: Camera3D
@@ -33,7 +44,6 @@ var world_root: Node3D
 var ui: Control
 var terrain_noise: FastNoiseLite
 var speed := 0.0
-var damage := 0.0
 var flip_timer := 0.0
 var cam_back := Vector3(0, 0, 1)
 var held := {}
@@ -89,10 +99,11 @@ func _build_camera() -> void:
     camera_3d = Camera3D.new()
     camera_3d.position = Vector3(0, 7, 12)
     camera_3d.current = true
+    camera_3d.near = 0.1
     camera_3d.far = 1500.0
     add_child(camera_3d)
 
-# ---------------------------------------------------------------- ввод
+# ======================= ВВОД =======================
 
 func _unhandled_input(event: InputEvent) -> void:
     if event is InputEventKey:
@@ -154,7 +165,7 @@ func _zone_at(pos: Vector2) -> String:
 func _pressed(action: String) -> bool:
     return held.has(action) or touches.values().has(action)
 
-# ---------------------------------------------------------------- игровой цикл
+# ======================= ИГРОВОЙ ЦИКЛ =======================
 
 func _physics_process(delta: float) -> void:
     if mode != "playing" or not is_instance_valid(car):
@@ -166,7 +177,11 @@ func _physics_process(delta: float) -> void:
 
     var engine_max: float = 36.0 + float(levels["Мотор"] - 1) * 7.0
     var max_speed: float = 32.0 + float(levels["Скорость"] - 1) * 4.5 + float(levels["Мотор"] - 1) * 1.5
-    var brake_max: float = 18.0 + float(levels["Тормоза"] - 1) * 4.0
+    var brake_max: float = 20.0 + float(levels["Тормоза"] - 1) * 4.0
+
+    var p := car.global_position
+    var on_bridge := absf(p.z - RIVER_Z) < BR_HALF
+    var on_sand := (not on_bridge) and absf(p.x - _road_x(p.z)) > ROAD_HALF + 0.4
 
     var fwd := -car.global_transform.basis.z
     var fwd_speed := fwd.dot(car.linear_velocity)
@@ -198,19 +213,25 @@ func _physics_process(delta: float) -> void:
     var steer_rate := 2.6 + float(levels["Колёса"] - 1) * 0.25
     car.steering = move_toward(car.steering, steer_in * max_steer, delta * steer_rate)
 
-    # Сцепление: на траве хуже
-    var offroad := absf(car.global_position.x) > 6.5
-    var grip := (3.2 + float(levels["Колёса"] - 1) * 0.5) * (0.55 if offroad else 1.0)
-    for w in wheels:
-        w.wheel_friction_slip = grip
-    car.linear_damp = 0.6 if offroad else 0.05
+    # Сцепление: на песке хуже
+    var grip := (8.5 + float(levels["Колёса"] - 1) * 0.9) * (0.6 if on_sand else 1.0)
+    for i in range(wheels.size()):
+        wheels[i].wheel_friction_slip = grip * (1.0 if i < 2 else 0.92)
+    car.linear_damp = 0.35 if on_sand else 0.05
 
-    if absf(car.global_position.x) > 7.0:
-        damage += delta * (0.6 + speed / 25.0)
-        if damage > 1.7:
-            finish_run(false, "Ты съехал с дороги и разбил машину!")
-            return
+    if is_instance_valid(car_dust):
+        car_dust.emitting = on_sand and speed > 7.0
 
+    # Проигрыши
+    if p.y < WATER_Y - 0.3 and absf(p.z - RIVER_Z) < BR_HALF + 6.0:
+        finish_run(false, "Ты упал в реку!")
+        return
+    if p.y < -15.0:
+        finish_run(false, "Ты улетел с трассы!")
+        return
+    if absf(p.x) > MAP_HALF_W - 8.0 or p.z > MAP_Z_MAX - 8.0 or p.z < MAP_Z_MIN + 8.0:
+        finish_run(false, "Ты уехал за пределы карты!")
+        return
     if car.global_transform.basis.y.y < 0.3:
         flip_timer += delta
         if flip_timer > 1.5:
@@ -219,11 +240,7 @@ func _physics_process(delta: float) -> void:
     else:
         flip_timer = 0.0
 
-    if car.global_position.y < -20.0:
-        finish_run(false, "Ты улетел с трассы!")
-        return
-
-    if car.global_position.z <= -ROAD_LENGTH:
+    if p.z <= -ROAD_LENGTH:
         finish_run(true, "")
 
 func _process(delta: float) -> void:
@@ -253,7 +270,11 @@ func _process(delta: float) -> void:
     camera_3d.fov = lerpf(camera_3d.fov, fov_target, minf(1.0, delta * 3.0))
 
     if is_instance_valid(status_label):
-        status_label.text = "До финиша: %d м" % int(maxf(0.0, ROAD_LENGTH + pos.z))
+        var txt := "До финиша: %d м" % int(maxf(0.0, ROAD_LENGTH + pos.z))
+        var to_bridge := pos.z - (RIVER_Z + BR_HALF)
+        if to_bridge > 0.0:
+            txt += "\nДо моста: %d м" % int(to_bridge)
+        status_label.text = txt
     if is_instance_valid(speed_label):
         speed_label.text = "%d км/ч" % int(speed * 3.6)
     if is_instance_valid(coins_label):
@@ -265,7 +286,7 @@ func _on_car_body_entered(body: Node) -> void:
     if body.is_in_group("obstacle") and car.linear_velocity.length() > 5.0:
         call_deferred("finish_run", false, "Ты врезался в препятствие!")
 
-# ---------------------------------------------------------------- интерфейс
+# ======================= ИНТЕРФЕЙС =======================
 
 func _clear_ui() -> void:
     if is_instance_valid(ui):
@@ -281,6 +302,7 @@ func _clear_world() -> void:
     world_root = Node3D.new()
     add_child(world_root)
     car = null
+    car_dust = null
     preview_car = null
     wheels.clear()
 
@@ -336,18 +358,18 @@ func show_menu() -> void:
     _clear_world()
     _clear_ui()
     var vp := _vp()
-    _make_menu_world()
-    camera_3d.fov = 55.0
-    camera_3d.position = Vector3(4.2, 2.0, 7.0)
-    camera_3d.look_at(Vector3(-1.6, 0.7, 0.0), Vector3.UP)
     _dim(Rect2(0, 0, 520, vp.y), 0.35)
     _label(ui, "DRIVE 3D", Vector2(80, 55), 58, Color(0.25, 0.75, 1.0))
-    _label(ui, "3D заезды • препятствия • гараж", Vector2(85, 125), 25)
+    _label(ui, "Пустыня • мост • гараж", Vector2(85, 125), 25)
     _label(ui, "Монеты: %d     Финиши: %d/3" % [coins, finishes % 3], Vector2(85, 175), 25, Color.GOLD)
     _button(ui, "ИГРАТЬ", Vector2(90, 250), Vector2(300, 65), start_run)
     _button(ui, "ГАРАЖ / УЛУЧШЕНИЯ", Vector2(90, 335), Vector2(300, 65), show_upgrades)
     _button(ui, "НА ВЕСЬ ЭКРАН", Vector2(90, 420), Vector2(300, 55), _toggle_fullscreen)
     _label(ui, "Управление: WASD / стрелки или экранные кнопки", Vector2(85, 500), 21)
+    camera_3d.fov = 55.0
+    camera_3d.position = Vector3(4.2, 2.0, 7.0)
+    camera_3d.look_at(Vector3(-1.6, 0.7, 0.0), Vector3.UP)
+    _make_menu_world()
 
 func show_upgrades() -> void:
     mode = "upgrades"
@@ -403,21 +425,20 @@ func buy_upgrade() -> void:
 func start_run() -> void:
     mode = "playing"
     speed = 0.0
-    damage = 0.0
     flip_timer = 0.0
     held.clear()
     touches.clear()
     _clear_world()
+    _build_hud()
+    cam_back = Vector3(0, 0, 1)
+    camera_3d.fov = 62.0
+    camera_3d.position = Vector3(0, 4.4, 8.5)
+    camera_3d.look_at(Vector3(0, 1.0, -5.0), Vector3.UP)
     _make_environment()
     car = _create_car()
     car.position = Vector3(0, 1.1, 0)
     world_root.add_child(car)
     _apply_upgrades()
-    cam_back = Vector3(0, 0, 1)
-    camera_3d.fov = 62.0
-    camera_3d.position = Vector3(0, 4.4, 8.5)
-    camera_3d.look_at(Vector3(0, 1.0, -5.0), Vector3.UP)
-    _build_hud()
 
 func _build_hud() -> void:
     var vp := _vp()
@@ -427,7 +448,7 @@ func _build_hud() -> void:
     _clear_ui()
     _label(ui, "W/↑ газ  S/↓ тормоз  A/D поворот", Vector2(20, 12), 20)
     status_label = _label(ui, "До финиша: %d м" % int(ROAD_LENGTH), Vector2(25, 50), 24)
-    coins_label = _label(ui, "Монеты: %d  |  Финиши: %d/3" % [coins, finishes % 3], Vector2(25, 88), 20)
+    coins_label = _label(ui, "Монеты: %d  |  Финиши: %d/3" % [coins, finishes % 3], Vector2(25, 115), 20)
     speed_label = _label(ui, "%d км/ч" % int(speed * 3.6), Vector2(vp.x - 200, 72), 28, Color.GOLD)
     _button(ui, "МЕНЮ", Vector2(vp.x - 170, 12), Vector2(150, 48), show_menu)
     _touch_pad("gas", "▲ ГАЗ", Rect2(30, vp.y - 260, 200, 120))
@@ -459,7 +480,7 @@ func _touch_pad(action: String, text: String, rect: Rect2) -> void:
     touch_pads[action] = pad
     pad.modulate.a = 0.6
 
-# ---------------------------------------------------------------- материалы и примитивы
+# ======================= ПРИМИТИВЫ =======================
 
 func _mat(c: Color, metallic: float = 0.0, rough: float = 0.8, emission: float = 0.0) -> StandardMaterial3D:
     var m := StandardMaterial3D.new()
@@ -482,15 +503,18 @@ func _box(parent: Node3D, pos: Vector3, size: Vector3, mat: Material) -> MeshIns
     parent.add_child(instance)
     return instance
 
+func _cyl_mesh(r_top: float, r_bottom: float, h: float, segs: int) -> CylinderMesh:
+    var m := CylinderMesh.new()
+    m.top_radius = r_top
+    m.bottom_radius = r_bottom
+    m.height = h
+    m.radial_segments = segs
+    m.rings = 1
+    return m
+
 func _cyl(parent: Node3D, pos: Vector3, radius: float, height: float, mat: Material, segs: int = 16) -> MeshInstance3D:
-    var mesh := CylinderMesh.new()
-    mesh.top_radius = radius
-    mesh.bottom_radius = radius
-    mesh.height = height
-    mesh.radial_segments = segs
-    mesh.rings = 1
     var instance := MeshInstance3D.new()
-    instance.mesh = mesh
+    instance.mesh = _cyl_mesh(radius, radius, height, segs)
     instance.position = pos
     instance.material_override = mat
     parent.add_child(instance)
@@ -510,46 +534,26 @@ func _add_multimesh(mesh: Mesh, mat: Material, xforms: Array) -> void:
     inst.material_override = mat
     world_root.add_child(inst)
 
-# ---------------------------------------------------------------- мир
+# ======================= МИР =======================
 
 func _make_sky_and_light() -> void:
     var env := WorldEnvironment.new()
     var environment := Environment.new()
     environment.background_mode = Environment.BG_SKY
     var sky_mat := ProceduralSkyMaterial.new()
-    sky_mat.sky_top_color = Color(0.22, 0.45, 0.82)
-    sky_mat.sky_horizon_color = Color(0.68, 0.78, 0.9)
-    sky_mat.ground_horizon_color = Color(0.68, 0.78, 0.9)
-    sky_mat.ground_bottom_color = Color(0.3, 0.4, 0.3)
+    sky_mat.sky_top_color = Color(0.28, 0.5, 0.85)
+    sky_mat.sky_horizon_color = Color(0.86, 0.8, 0.7)
+    sky_mat.ground_horizon_color = Color(0.86, 0.8, 0.7)
+    sky_mat.ground_bottom_color = Color(0.6, 0.5, 0.38)
     environment.sky = Sky.new()
     environment.sky.sky_material = sky_mat
     environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-    environment.ambient_light_color = Color(0.6, 0.67, 0.78)
-    environment.ambient_light_energy = 0.55
+    environment.ambient_light_color = Color(0.75, 0.72, 0.68)
+    environment.ambient_light_energy = 0.6
     environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
     environment.fog_enabled = true
-    environment.fog_light_color = Color(0.7, 0.78, 0.88)
-    environment.fog_density = 0.003
+    environment.fog_light_color = Color(0.88, 0.8, 0.68)
+    environment.fog_density = 0.0035
     env.environment = environment
     world_root.add_child(env)
-    var sun := DirectionalLight3D.new()
-    sun.rotation_degrees = Vector3(-48, 35, 0)
-    sun.light_energy = 1.25
-    sun.light_color = Color(1.0, 0.95, 0.85)
-    sun.shadow_enabled = SHADOWS
-    sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
-    sun.directional_shadow_max_distance = 90.0
-    world_root.add_child(sun)
-
-func _make_menu_world() -> void:
-    _make_sky_and_light()
-    _box(world_root, Vector3(0, -0.12, 0), Vector3(400, 0.2, 400), _mat(Color(0.17, 0.36, 0.15), 0.0, 1.0))
-    _box(world_root, Vector3(0, -0.05, 0), Vector3(16, 0.1, 40), _mat(Color(0.12, 0.12, 0.14), 0.0, 0.95))
-    preview_car = Node3D.new()
-    preview_car.position = Vector3(0, 0.7, 0)
-    world_root.add_child(preview_car)
-    _build_car_visual(preview_car)
-    for p in [Vector3(-0.93, -0.3, -1.3), Vector3(0.93, -0.3, -1.3), Vector3(-0.93, -0.3, 1.25), Vector3(0.93, -0.3, 1.25)]:
-        _make_wheel_mesh(preview_car, p)
-
-func _make_environment() ->
+    var sun 
