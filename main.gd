@@ -275,21 +275,21 @@ func _make_music() -> AudioStreamWAV:
     var step_len := 5512
     var lead := [440.0, 523.25, 659.25, 523.25, 587.33, 659.25, 783.99, 659.25, 440.0, 523.25, 659.25, 880.0, 783.99, 659.25, 587.33, 523.25]
     var bass := [110.0, 110.0, 130.81, 130.81, 98.0, 98.0, 146.83, 146.83, 110.0, 110.0, 130.81, 130.81, 98.0, 98.0, 87.31, 87.31]
-    var total := step_len * lead.size()
+    var total: int = step_len * lead.size()
     var samples := PackedFloat32Array()
     samples.resize(total)
     for n in range(total):
-        var s := int(n / step_len)
-        var local := n - s * step_len
-        var tg := float(n) / float(rate)
-        var frac := float(local) / float(step_len)
-        var env := (1.0 - frac) * (1.0 - frac)
+        var s: int = n / step_len
+        var local: int = n - s * step_len
+        var tg: float = float(n) / float(rate)
+        var frac: float = float(local) / float(step_len)
+        var env: float = (1.0 - frac) * (1.0 - frac)
         var lf: float = lead[s]
         var bf: float = bass[s]
-        var sq := -1.0
+        var sq: float = -1.0
         if fmod(tg * lf, 1.0) < 0.5:
             sq = 1.0
-        var tri := absf(fmod(tg * bf, 1.0) * 2.0 - 1.0) * 2.0 - 1.0
+        var tri: float = absf(fmod(tg * bf, 1.0) * 2.0 - 1.0) * 2.0 - 1.0
         samples[n] = sq * 0.16 * env + tri * 0.28 * (0.6 + 0.4 * env)
     return _make_wav(samples, rate, true)
 
@@ -379,11 +379,13 @@ func _update_music() -> void:
         music_player.stop()
 
 func _engine_sounds(on: bool) -> void:
-    for p in [engine_player, brake_player, skid_player]:
-        if on and not p.playing:
-            p.play()
-        elif not on and p.playing:
-            p.stop()
+    var list: Array = [engine_player, brake_player, skid_player]
+    for p in list:
+        var pl: AudioStreamPlayer = p
+        if on and not pl.playing:
+            pl.play()
+        elif not on and pl.playing:
+            pl.stop()
 
 func _update_audio() -> void:
     var eng_on: bool = bool(settings["engine_on"])
@@ -453,10 +455,10 @@ func _on_viewport_resized() -> void:
 func _build_camera() -> void:
     camera_3d = Camera3D.new()
     camera_3d.position = Vector3(0, 7, 12)
-    camera_3d.current = true
     camera_3d.near = 0.1
     camera_3d.far = 1500.0
     add_child(camera_3d)
+    camera_3d.current = true
 
 func _setup_env() -> void:
     var env := Environment.new()
@@ -533,18 +535,18 @@ func _input(event: InputEvent) -> void:
         if (mm.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0:
             _touch_set(-1, mm.position)
 
-func _touch_set(index: int, pos: Vector2) -> void:
-    var action := _zone_at(pos)
+func _touch_set(index: int, p2: Vector2) -> void:
+    var action := _zone_at(p2)
     if action == "":
         touches.erase(index)
     else:
         touches[index] = action
 
-func _zone_at(pos: Vector2) -> String:
+func _zone_at(p2: Vector2) -> String:
     for action in touch_zones:
         var rect: Rect2 = touch_zones[action]
-        if rect.grow(8.0).has_point(pos):
-            return action
+        if rect.grow(8.0).has_point(p2):
+            return str(action)
     return ""
 
 func _pressed(action: String) -> bool:
@@ -606,7 +608,7 @@ func _side_box(w: float) -> VBoxContainer:
     ui.add_child(mc)
     mc.set_anchors_preset(Control.PRESET_FULL_RECT)
     for s in ["left", "right", "top", "bottom"]:
-        mc.add_theme_constant_override("margin_" + s, 40)
+        mc.add_theme_constant_override("margin_" + str(s), 40)
     var vb := VBoxContainer.new()
     vb.custom_minimum_size = Vector2(w, 0)
     vb.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
@@ -647,10 +649,11 @@ func _mat(col: Color, metal: float = 0.0, rough: float = 0.8) -> StandardMateria
 
 func _tri(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, n: Vector3) -> void:
     if (b - a).cross(c - a).dot(n) > 0.0:
-        var t := b
+        var t: Vector3 = b
         b = c
         c = t
-    for v in [a, b, c]:
+    var vs: Array = [a, b, c]
+    for v in vs:
         st.set_normal(n)
         st.add_vertex(v)
 
@@ -682,7 +685,7 @@ func _add_multi(mm: MultiMesh, mat: Material) -> void:
     world_root.add_child(mmi)
 
 func _make_trees(positions: Array, crown_col: Color, rng: RandomNumberGenerator) -> void:
-    var cnt := positions.size()
+    var cnt: int = positions.size()
     if cnt == 0:
         return
     var trunk := MultiMesh.new()
@@ -702,20 +705,26 @@ func _make_trees(positions: Array, crown_col: Color, rng: RandomNumberGenerator)
     crown.instance_count = cnt
     for i in range(cnt):
         var p: Vector3 = positions[i]
-        var s := rng.randf_range(0.8, 1.6)
+        var s: float = rng.randf_range(0.8, 1.6)
         var bs := Basis.from_scale(Vector3(s, s, s))
         trunk.set_instance_transform(i, Transform3D(bs, p + Vector3(0, 1.5 * s, 0)))
         crown.set_instance_transform(i, Transform3D(bs, p + Vector3(0, 4.2 * s, 0)))
     _add_multi(trunk, _mat(Color(0.3, 0.18, 0.1)))
     _add_multi(crown, _mat(crown_col, 0.0, 0.9))
-
 # ======================= МОДЕЛЬ МАШИНЫ =======================
 
 func _build_car(id: int, col: Color, with_smoke: bool) -> Dictionary:
-    var L := _car_f(id, "len")
-    var W := _car_f(id, "wid")
-    var R := _car_f(id, "wheel")
-    var prof: Array = [[0.6, 0.55, 0.55, 0.05], [0.5, 0.42, 0.45, 0.08], [0.75, 0.65, 0.65, 0.1], [0.7, 0.6, 0.35, -0.12], [0.45, 0.38, 0.42, 0.02]][id]
+    var L: float = _car_f(id, "len")
+    var W: float = _car_f(id, "wid")
+    var R: float = _car_f(id, "wheel")
+    var profs: Array = [
+        [0.6, 0.55, 0.55, 0.05],
+        [0.5, 0.42, 0.45, 0.08],
+        [0.75, 0.65, 0.65, 0.1],
+        [0.7, 0.6, 0.35, -0.12],
+        [0.45, 0.38, 0.42, 0.02],
+    ]
+    var prof: Array = profs[id]
     var bh: float = prof[0]
     var ch: float = prof[1]
     var cl: float = prof[2]
@@ -732,25 +741,29 @@ func _build_car(id: int, col: Color, with_smoke: bool) -> Dictionary:
     head.emission = Color(1, 0.95, 0.7)
     var tire := _mat(Color(0.05, 0.05, 0.05))
     var hub := _mat(Color(0.7, 0.7, 0.75), 0.8, 0.3)
-    var by := R * 0.9
+    var by: float = R * 0.9
     _add_box(root, Vector3(W, bh, L), Vector3(0, by + bh * 0.5, 0), bmat)
     _add_box(root, Vector3(W * 0.82, ch, L * cl), Vector3(0, by + bh + ch * 0.5, L * cz), glass)
     _add_box(root, Vector3(W * 0.84, 0.06, L * cl), Vector3(0, by + bh + ch, L * cz), bmat)
-    for sx in [-1.0, 1.0]:
+    for sxv in [-1.0, 1.0]:
+        var sx: float = sxv
         _add_box(root, Vector3(0.4, 0.18, 0.08), Vector3(sx * W * 0.34, by + bh * 0.7, L * 0.5), tail)
         _add_box(root, Vector3(0.4, 0.16, 0.08), Vector3(sx * W * 0.34, by + bh * 0.7, -L * 0.5), head)
     if id == 1 or id == 4:
         _add_box(root, Vector3(W * 0.9, 0.06, 0.4), Vector3(0, by + bh + 0.25, L * 0.46), bmat)
-        for sx in [-1.0, 1.0]:
-            _add_box(root, Vector3(0.06, 0.25, 0.1), Vector3(sx * W * 0.3, by + bh + 0.12, L * 0.46), bmat)
+        for sxv2 in [-1.0, 1.0]:
+            var sx2: float = sxv2
+            _add_box(root, Vector3(0.06, 0.25, 0.1), Vector3(sx2 * W * 0.3, by + bh + 0.12, L * 0.46), bmat)
     if id == 3:
         _add_box(root, Vector3(W * 0.8, 0.03, L * 0.34), Vector3(0, by + bh + 0.016, L * 0.3), glass)
     var spins: Array = []
     var steers: Array = []
-    for sx in [-1.0, 1.0]:
-        for fz in [-1.0, 1.0]:
+    for sxv3 in [-1.0, 1.0]:
+        var sx3: float = sxv3
+        for fzv in [-1.0, 1.0]:
+            var fz: float = fzv
             var steer := Node3D.new()
-            steer.position = Vector3(sx * (W * 0.5 - 0.12), R, fz * L * 0.32)
+            steer.position = Vector3(sx3 * (W * 0.5 - 0.12), R, fz * L * 0.32)
             var spin := Node3D.new()
             steer.add_child(spin)
             var mi := MeshInstance3D.new()
@@ -840,7 +853,7 @@ func _show_preview(id: int) -> void:
         return
     if preview_car != null and is_instance_valid(preview_car):
         preview_car.queue_free()
-    var d := _build_car(id, car_colors[id], false)
+    var d: Dictionary = _build_car(id, car_colors[id], false)
     preview_car = d["root"]
     preview_body_mat = d["body"]
     preview_id = id
@@ -894,10 +907,11 @@ func show_settings() -> void:
     _clear_ui()
     var vb := _center_box()
     vb.add_child(_clabel("НАСТРОЙКИ", 44))
-    var items := [["music_on", "Музыка"], ["engine_on", "Звук двигателя"], ["brake_on", "Звук тормоза"], ["drift_on", "Звук заноса"], ["click_on", "Звук кнопок"]]
+    var items: Array = [["music_on", "Музыка"], ["engine_on", "Звук двигателя"], ["brake_on", "Звук тормоза"], ["drift_on", "Звук заноса"], ["click_on", "Звук кнопок"]]
     for it in items:
-        var on := bool(settings[it[0]])
-        vb.add_child(_button("%s: %s" % [it[1], "ВКЛ" if on else "ВЫКЛ"], _toggle_setting.bind(it[0]), 440, 50))
+        var on: bool = bool(settings[it[0]])
+        var state_txt: String = "ВКЛ" if on else "ВЫКЛ"
+        vb.add_child(_button("%s: %s" % [it[1], state_txt], _toggle_setting.bind(it[0]), 440, 50))
     vb.add_child(_clabel("Громкость", 24))
     var sl := HSlider.new()
     sl.min_value = 0.0
@@ -934,7 +948,7 @@ func show_controls() -> void:
     vb.add_child(_clabel("УПРАВЛЕНИЕ", 44))
     vb.add_child(_clabel("Стрелки тоже работают", 20))
     for a in ["gas", "brake", "left", "right"]:
-        var t := str(ACTION_NAMES[a]) + ": "
+        var t: String = str(ACTION_NAMES[a]) + ": "
         if waiting_key == a:
             t += "нажми клавишу..."
         else:
@@ -953,7 +967,6 @@ func _toggle_control(k: String) -> void:
     controls[k] = not bool(controls[k])
     _save_game()
     show_controls()
-
 # ---------- Гараж ----------
 func show_garage() -> void:
     mode = "garage"
@@ -974,7 +987,7 @@ func show_garage() -> void:
     vb.add_child(_pair(_button("<", _garage_step.bind(-1), 100, 50), _button(">", _garage_step.bind(1), 100, 50)))
     var b: Button
     if owned[garage_sel]:
-        var sel := current_car == garage_sel
+        var sel: bool = current_car == garage_sel
         b = _button("• Выбрана" if sel else "Выбрать", _garage_action, 380, 52)
         b.disabled = sel
     else:
@@ -1034,7 +1047,7 @@ func show_upgrades() -> void:
         if n == selected_upgrade:
             bt.add_theme_color_override("font_color", GOLD)
         vb.add_child(bt)
-    var lv := _lv(selected_upgrade)
+    var lv: int = _lv(selected_upgrade)
     detail_label = _label(str(UPGRADE_INFO[selected_upgrade]), 22)
     vb.add_child(detail_label)
     if lv < 5:
@@ -1057,10 +1070,10 @@ func _select_upgrade(n: String) -> void:
     show_upgrades()
 
 func _buy_upgrade() -> void:
-    var lv := _lv(selected_upgrade)
+    var lv: int = _lv(selected_upgrade)
     if lv >= 5:
         return
-    var cost := UPGRADE_COST * lv
+    var cost: int = UPGRADE_COST * lv
     if coins >= cost:
         coins -= cost
         car_levels[current_car][selected_upgrade] = lv + 1
@@ -1096,15 +1109,16 @@ func show_paint() -> void:
     vb.add_child(_label("ПОКРАСКА", 40))
     vb.add_child(_label(str(CARS[current_car]["name"]), 28))
     var vals := {"h": paint_h, "s": paint_s, "v": paint_v}
-    for it in [["Оттенок", "h"], ["Насыщенность", "s"], ["Яркость", "v"]]:
-        vb.add_child(_label(it[0], 24))
+    var rows: Array = [["Оттенок", "h"], ["Насыщенность", "s"], ["Яркость", "v"]]
+    for it in rows:
+        vb.add_child(_label(str(it[0]), 24))
         var sl := HSlider.new()
         sl.min_value = 0.0
         sl.max_value = 1.0
         sl.step = 0.01
         sl.value = float(vals[it[1]])
         sl.custom_minimum_size = Vector2(360, 32)
-        sl.value_changed.connect(_on_paint.bind(it[1]))
+        sl.value_changed.connect(_on_paint.bind(str(it[1])))
         vb.add_child(sl)
     vb.add_child(_button("Цвет по умолчанию", _paint_default, 380, 50))
     vb.add_child(_button("Готово", _paint_done, 380, 52))
@@ -1135,16 +1149,16 @@ func _gen_track(id: int) -> void:
     var m: Dictionary = MAPS[id]
     var rng := RandomNumberGenerator.new()
     rng.seed = int(m["seed"])
-    var n := int(TRACK_LEN / STEP)
+    var n: int = int(TRACK_LEN / STEP)
     var dh := PackedFloat32Array()
     dh.resize(n)
-    var i := 18
-    var hsum := 0.0
+    var i: int = 18
+    var hsum: float = 0.0
     while i < n - 18:
         if rng.randf() < float(m["curve"]):
-            var cl := rng.randi_range(int(m["c_min"]), int(m["c_max"]))
-            var ang := deg_to_rad(rng.randf_range(float(m["a_min"]), float(m["a_max"])))
-            var sgn := 1.0 if rng.randf() < 0.5 else -1.0
+            var cl: int = rng.randi_range(int(m["c_min"]), int(m["c_max"]))
+            var ang: float = deg_to_rad(rng.randf_range(float(m["a_min"]), float(m["a_max"])))
+            var sgn: float = 1.0 if rng.randf() < 0.5 else -1.0
             if absf(hsum) > deg_to_rad(100.0):
                 sgn = -signf(hsum)
             for k in range(cl):
@@ -1157,7 +1171,7 @@ func _gen_track(id: int) -> void:
     tpos = PackedVector3Array()
     thead = PackedFloat32Array()
     var p := Vector3.ZERO
-    var h := 0.0
+    var h: float = 0.0
     tpos.append(p)
     thead.append(h)
     for k in range(n):
@@ -1171,11 +1185,12 @@ func _build_race_world(id: int) -> void:
     _gen_track(id)
     var mn := Vector2(1.0e9, 1.0e9)
     var mx := Vector2(-1.0e9, -1.0e9)
-    for p in tpos:
-        mn.x = minf(mn.x, p.x)
-        mn.y = minf(mn.y, p.z)
-        mx.x = maxf(mx.x, p.x)
-        mx.y = maxf(mx.y, p.z)
+    for i in range(tpos.size()):
+        var tp0: Vector3 = tpos[i]
+        mn.x = minf(mn.x, tp0.x)
+        mn.y = minf(mn.y, tp0.z)
+        mx.x = maxf(mx.x, tp0.x)
+        mx.y = maxf(mx.y, tp0.z)
     var ground := MeshInstance3D.new()
     var pm := PlaneMesh.new()
     pm.size = Vector2(9000, 9000)
@@ -1192,9 +1207,11 @@ func _build_race_world(id: int) -> void:
     rng.seed = int(m["seed"]) + 99
     var tp: Array = []
     for i in range(0, tpos.size(), 4):
-        for s in [-1.0, 1.0]:
+        for sv in [-1.0, 1.0]:
+            var s: float = sv
             var lat: float = s * rng.randf_range(11.0, 45.0)
-            tp.append(tpos[i] + _rvec(thead[i]) * lat + _tvec(thead[i]) * rng.randf_range(-6.0, 6.0))
+            var along: float = rng.randf_range(-6.0, 6.0)
+            tp.append(tpos[i] + _rvec(thead[i]) * lat + _tvec(thead[i]) * along)
     _make_trees(tp, Color.html(str(m["trees"])), rng)
 
 func _build_road_meshes() -> void:
@@ -1202,28 +1219,36 @@ func _build_road_meshes() -> void:
     var st_line := SurfaceTool.new()
     var st_wa := SurfaceTool.new()
     var st_wb := SurfaceTool.new()
-    for s in [st_road, st_line, st_wa, st_wb]:
-        s.begin(Mesh.PRIMITIVE_TRIANGLES)
+    var all_st: Array = [st_road, st_line, st_wa, st_wb]
+    for s in all_st:
+        var sst: SurfaceTool = s
+        sst.begin(Mesh.PRIMITIVE_TRIANGLES)
     var up := Vector3(0, 0.01, 0)
     var up2 := Vector3(0, 0.02, 0)
     var wh := Vector3(0, 0.9, 0)
     for i in range(tpos.size() - 1):
         var a: Vector3 = tpos[i]
         var b: Vector3 = tpos[i + 1]
-        var ra := _rvec(thead[i])
-        var rb := _rvec(thead[i + 1])
+        var ra: Vector3 = _rvec(thead[i])
+        var rb: Vector3 = _rvec(thead[i + 1])
         _quad(st_road, a - ra * ROAD_HALF + up, a + ra * ROAD_HALF + up, b + rb * ROAD_HALF + up, b - rb * ROAD_HALF + up, Vector3.UP)
-        for off in [-ROAD_HALF + 0.5, ROAD_HALF - 0.5]:
+        var edge_offs: Array = [-ROAD_HALF + 0.5, ROAD_HALF - 0.5]
+        for offv in edge_offs:
+            var off: float = offv
             _quad(st_line, a + ra * (off - 0.1) + up2, a + ra * (off + 0.1) + up2, b + rb * (off + 0.1) + up2, b + rb * (off - 0.1) + up2, Vector3.UP)
         if i % 2 == 0:
-            var mid := a.lerp(b, 0.5)
-            var rm := ra.lerp(rb, 0.5).normalized()
-            for off2 in [-3.15, -1.05, 1.05, 3.15]:
+            var mid: Vector3 = a.lerp(b, 0.5)
+            var rm: Vector3 = ra.lerp(rb, 0.5).normalized()
+            var dash_offs: Array = [-3.15, -1.05, 1.05, 3.15]
+            for off2v in dash_offs:
+                var off2: float = off2v
                 _quad(st_line, a + ra * (off2 - 0.09) + up2, a + ra * (off2 + 0.09) + up2, mid + rm * (off2 + 0.09) + up2, mid + rm * (off2 - 0.09) + up2, Vector3.UP)
-        var stw := st_wa if ((i >> 1) & 1) == 0 else st_wb
-        for sd in [-1.0, 1.0]:
-            var e0 := a + ra * sd * (ROAD_HALF + 0.35)
-            var e1 := b + rb * sd * (ROAD_HALF + 0.35)
+        var stw: SurfaceTool = st_wa if ((i >> 1) & 1) == 0 else st_wb
+        var sides: Array = [-1.0, 1.0]
+        for sdv in sides:
+            var sd: float = sdv
+            var e0: Vector3 = a + ra * sd * (ROAD_HALF + 0.35)
+            var e1: Vector3 = b + rb * sd * (ROAD_HALF + 0.35)
             _quad(stw, e0, e1, e1 + wh, e0 + wh, -ra * sd)
             _quad(stw, e0 + wh - ra * sd * 0.2, e1 + wh - rb * sd * 0.2, e1 + wh + rb * sd * 0.2, e0 + wh + ra * sd * 0.2, Vector3.UP)
     _add_mesh(st_road, Color(0.13, 0.14, 0.17))
@@ -1254,21 +1279,23 @@ func _place_items(m: Dictionary) -> void:
     coin_nodes = []
     var rng := RandomNumberGenerator.new()
     rng.seed = int(m["seed"]) + 7
-    var n := tpos.size()
-    var i := 22
+    var n: int = tpos.size()
+    var i: int = 22
     while i < n - 20:
         var lanes: Array = [0, 1, 2, 3, 4]
         lanes.shuffle()
         var base: Vector3 = tpos[i]
-        var rv := _rvec(thead[i])
+        var rv: Vector3 = _rvec(thead[i])
         if rng.randf() < float(m["obst"]):
-            var cnt := rng.randi_range(1, 3)
+            var cnt: int = rng.randi_range(1, 3)
             for k in range(cnt):
-                _add_obstacle(base + rv * float(LANES[lanes[k]]), rng.randi_range(0, 1) == 0, thead[i])
+                var lane_x: float = float(LANES[int(lanes[k])])
+                var is_crate: bool = rng.randi_range(0, 1) == 0
+                _add_obstacle(base + rv * lane_x, is_crate, thead[i])
         elif rng.randf() < 0.45:
-            var ln: int = lanes[0]
+            var ln: int = int(lanes[0])
             for k in range(4):
-                var j := mini(i + k, n - 1)
+                var j: int = mini(i + k, n - 1)
                 _add_coin(tpos[j] + _rvec(thead[j]) * float(LANES[ln]))
         i += rng.randi_range(5, 8)
 
@@ -1326,7 +1353,7 @@ func _add_ramp(p: Vector3, yw: float, L: float, W: float, H: float) -> void:
     _tri(st, B, D, F, Vector3(1, 0, 0))
     var mi := MeshInstance3D.new()
     mi.mesh = st.commit()
-    var hue := clampf(H / 16.0, 0.0, 1.0)
+    var hue: float = clampf(H / 16.0, 0.0, 1.0)
     mi.material_override = _mat(Color.from_hsv(0.08 + hue * 0.7, 0.85, 0.95), 0.1, 0.6)
     mi.position = p
     mi.rotation.y = yw
@@ -1355,19 +1382,20 @@ func _build_free_world() -> void:
     world_root.add_child(ground)
     var road := _mat(Color(0.14, 0.15, 0.18), 0.0, 0.9)
     for k in range(-7, 8):
-        var c := float(k) * 130.0
+        var c: float = float(k) * 130.0
         _free_road(Vector3(2000, 0.02, 7), Vector3(0, -0.005, c), road)
         _free_road(Vector3(7, 0.02, 2000), Vector3(c, -0.005, 0), road)
     var wm := _mat(Color(0.6, 0.25, 0.2))
-    for s in [-1.0, 1.0]:
+    for sv in [-1.0, 1.0]:
+        var s: float = sv
         _add_box(world_root, Vector3(2000, 8, 2), Vector3(0, 4, s * FREE_HALF), wm)
         _add_box(world_root, Vector3(2, 8, 2000), Vector3(s * FREE_HALF, 4, 0), wm)
     var rng := RandomNumberGenerator.new()
     rng.seed = 4242
     # ряд трамплинов вперёд (растут по высоте) + ускорители перед ними
     for k in range(10):
-        var h := 1.5 + k * 0.6
-        var rz := -80.0 - k * 60.0
+        var h: float = 1.5 + float(k) * 0.6
+        var rz: float = -80.0 - float(k) * 60.0
         _add_ramp(Vector3(0, 0, rz), 0.0, 10.0 + h * 3.0, 9.0, h)
         _add_boost(Vector3(0, 0, rz + 22.0))
     # мега-трамплин
@@ -1375,26 +1403,26 @@ func _build_free_world() -> void:
     _add_ramp(Vector3(0, 0, -700), 0.0, 48.0, 16.0, 15.0)
     # стена трамплинов позади
     for k in range(-3, 4):
-        _add_ramp(Vector3(k * 20.0, 0, 200), PI, 24.0, 12.0, 5.0)
+        _add_ramp(Vector3(float(k) * 20.0, 0, 200), PI, 24.0, 12.0, 5.0)
     # кольцо трамплинов вокруг старта
     for k in range(12):
-        var a := TAU * float(k) / 12.0
+        var a: float = TAU * float(k) / 12.0
         var rp := Vector3(cos(a), 0, sin(a)) * 150.0
         _add_ramp(rp, atan2(rp.x, rp.z), 20.0, 10.0, 4.5)
     # случайные трамплины по всей карте
-    var made := 0
+    var made: int = 0
     while made < 60:
         var p := Vector3(rng.randf_range(-900, 900), 0, rng.randf_range(-900, 900))
         if Vector2(p.x, p.z).length() < 90.0:
             continue
-        var h2 := rng.randf_range(2.0, 7.0)
+        var h2: float = rng.randf_range(2.0, 7.0)
         _add_ramp(p, rng.randf_range(0.0, TAU), 10.0 + h2 * 2.5, rng.randf_range(7.0, 12.0), h2)
         made += 1
     # деревья за стенами
     var tp: Array = []
     for k in range(160):
-        var t := rng.randf_range(-1000.0, 1000.0)
-        var d := FREE_HALF + rng.randf_range(15.0, 80.0)
+        var t: float = rng.randf_range(-1000.0, 1000.0)
+        var d: float = FREE_HALF + rng.randf_range(15.0, 80.0)
         match rng.randi_range(0, 3):
             0:
                 tp.append(Vector3(t, 0, d))
@@ -1407,16 +1435,16 @@ func _build_free_world() -> void:
     _make_trees(tp, Color.html("1f6d24"), rng)
 
 func _ground_h(p: Vector3) -> float:
-    var best := 0.0
+    var best: float = 0.0
     for r in ramps:
         var rp: Vector3 = r["pos"]
-        var dx := p.x - rp.x
-        var dz := p.z - rp.z
+        var dx: float = p.x - rp.x
+        var dz: float = p.z - rp.z
         var rad: float = r["rad"]
         if dx * dx + dz * dz > rad * rad:
             continue
-        var loc := Vector3(dx, 0.0, dz).rotated(Vector3.UP, -float(r["yaw"]))
-        var u := -loc.z / float(r["L"])
+        var loc: Vector3 = Vector3(dx, 0.0, dz).rotated(Vector3.UP, -float(r["yaw"]))
+        var u: float = -loc.z / float(r["L"])
         if u >= 0.0 and u <= 1.0 and absf(loc.x) <= float(r["W"]) * 0.5:
             best = maxf(best, float(r["H"]) * u)
     return best
@@ -1442,7 +1470,7 @@ func start_free() -> void:
     _begin_run()
 
 func _spawn_car() -> void:
-    var d := _build_car(current_car, car_colors[current_car], true)
+    var d: Dictionary = _build_car(current_car, car_colors[current_car], true)
     car = CharacterBody3D.new()
     vis = d["root"]
     car.add_child(vis)
@@ -1514,7 +1542,7 @@ func _vmax() -> float:
     return NORMAL_MAX_KMH / 3.6 * _car_f(current_car, "speed") * (1.0 + 0.05 * float(_lv("Скорость") - 1))
 
 func _acc() -> float:
-    var a := 13.0 * _car_f(current_car, "engine") * (1.0 + 0.12 * float(_lv("Мотор") - 1)) * pow(1000.0 / _car_f(current_car, "mass"), 0.3)
+    var a: float = 13.0 * _car_f(current_car, "engine") * (1.0 + 0.12 * float(_lv("Мотор") - 1)) * pow(1000.0 / _car_f(current_car, "mass"), 0.3)
     if free_mode and bool(car_turbo[current_car]):
         a *= 3.5
     return a
@@ -1522,7 +1550,7 @@ func _acc() -> float:
 # ======================= ГЛАВНЫЙ ЦИКЛ =======================
 
 func _process(delta: float) -> void:
-    var dt := minf(delta, 0.05)
+    var dt: float = minf(delta, 0.05)
     if mode == "playing":
         _update_race(dt)
         if mode == "playing":
@@ -1530,7 +1558,7 @@ func _process(delta: float) -> void:
             _update_audio()
             for c in coin_nodes:
                 if c["alive"]:
-                    c["node"].rotation.y += dt * 3.0
+                    (c["node"] as Node3D).rotation.y += dt * 3.0
     elif preview_car != null and is_instance_valid(preview_car):
         preview_car.rotation.y += dt * 0.5
 
@@ -1538,10 +1566,10 @@ func _update_race(dt: float) -> void:
     run_time += dt
     invincible = maxf(0.0, invincible - dt)
     shake = maxf(0.0, shake - dt * 2.5)
-    var vmax := _vmax()
-    var g := _pressed("gas")
-    var b := _pressed("brake")
-    var st_in := 0.0
+    var vmax: float = _vmax()
+    var g: bool = _pressed("gas")
+    var b: bool = _pressed("brake")
+    var st_in: float = 0.0
     if _pressed("left"):
         st_in += 1.0
     if _pressed("right"):
@@ -1549,7 +1577,7 @@ func _update_race(dt: float) -> void:
     gas_amt = move_toward(gas_amt, 1.0 if g else 0.0, dt * 4.0)
     brake_amt = move_toward(brake_amt, 1.0 if b else 0.0, dt * 6.0)
     steer_vis = move_toward(steer_vis, st_in, dt * 4.0)
-    var brk := 30.0 * (1.0 + 0.12 * float(_lv("Тормоза") - 1))
+    var brk: float = 30.0 * (1.0 + 0.12 * float(_lv("Тормоза") - 1))
     if grounded:
         if g:
             if speed < -0.5:
@@ -1562,30 +1590,31 @@ func _update_race(dt: float) -> void:
             elif not g:
                 speed = move_toward(speed, -8.0, 6.0 * dt)
     if speed > 0.0:
-        var drag := (0.8 + 0.0006 * speed * speed) * (0.3 if g else 1.0)
+        var drag: float = (0.8 + 0.0006 * speed * speed) * (0.3 if g else 1.0)
         speed = maxf(0.0, speed - drag * dt)
     elif speed < 0.0:
         speed = minf(0.0, speed + 3.0 * dt)
     if speed > vmax:
         speed = move_toward(speed, vmax, 20.0 * dt)
     # РУЛЕНИЕ: машина по-настоящему поворачивается
-    var grip := _car_f(current_car, "grip") * (1.0 + 0.08 * float(_lv("Колёса") - 1))
-    var stab := 1.0 + 0.07 * float(_lv("Подвеска") - 1)
-    var av := absf(speed)
-    var rate := 2.1 * grip / (1.0 + av / 28.0)
+    var grip: float = _car_f(current_car, "grip") * (1.0 + 0.08 * float(_lv("Колёса") - 1))
+    var stab: float = 1.0 + 0.07 * float(_lv("Подвеска") - 1)
+    var av: float = absf(speed)
+    var rate: float = 2.1 * grip / (1.0 + av / 28.0)
     if av < 2.0:
         rate *= av / 2.0
     if not grounded:
         rate *= 0.3
-    yaw += steer_vis * rate * (1.0 if speed >= 0.0 else -1.0) * dt
+    var dir_sign: float = 1.0 if speed >= 0.0 else -1.0
+    yaw += steer_vis * rate * dir_sign * dt
     # скольжение
     var fwd := Vector3(-sin(yaw), 0.0, -cos(yaw))
-    var desired := fwd * speed
-    var gk := 9.0 * grip * stab
+    var desired: Vector3 = fwd * speed
+    var gk: float = 9.0 * grip * stab
     if not grounded:
         gk = 0.8
     vel = vel.lerp(desired, clampf(gk * dt, 0.0, 1.0))
-    var slip := (vel - desired).length()
+    var slip: float = (vel - desired).length()
     skid_amt = 0.0
     if av > 8.0 and grounded:
         skid_amt = clampf((slip - 1.5) / 6.0, 0.0, 1.0)
@@ -1594,7 +1623,7 @@ func _update_race(dt: float) -> void:
     pos += vel * dt
     # границы
     if free_mode:
-        var lim := FREE_HALF - 3.0
+        var lim: float = FREE_HALF - 3.0
         if absf(pos.x) > lim:
             pos.x = clampf(pos.x, -lim, lim)
             vel.x = 0.0
@@ -1605,13 +1634,14 @@ func _update_race(dt: float) -> void:
             vel.z = 0.0
             speed *= 0.7
             shake = 0.3
-        for bp in boosts:
+        for bpv in boosts:
+            var bp: Vector3 = bpv
             if absf(pos.x - bp.x) < 3.5 and absf(pos.z - bp.z) < 4.5 and grounded:
                 speed = maxf(speed, vmax * 1.3)
     else:
         _track_constrain(dt)
     # вертикаль (трамплины)
-    var gh := 0.0
+    var gh: float = 0.0
     if free_mode:
         gh = _ground_h(pos)
         if gh - y > 0.9:
@@ -1639,7 +1669,7 @@ func _update_race(dt: float) -> void:
             vy = 0.0
             grounded = true
             climb_rate = 0.0
-    var pt := 0.0
+    var pt: float = 0.0
     if grounded:
         pt = atan2(climb_rate, maxf(av, 6.0))
     else:
@@ -1655,41 +1685,41 @@ func _update_race(dt: float) -> void:
             return
     # визуал и звук
     for w in wheel_spins:
-        w.rotation.x -= speed / wheel_r * dt
-    for w in wheel_steers:
-        w.rotation.y = steer_vis * 0.45
+        (w as Node3D).rotation.x -= speed / wheel_r * dt
+    for w2 in wheel_steers:
+        (w2 as Node3D).rotation.y = steer_vis * 0.45
     tail_mat.emission_energy_multiplier = 3.0 if brake_amt > 0.1 else 0.6
     smoke.emitting = skid_amt > 0.25 or hits >= 2
     vis.visible = invincible <= 0.0 or (int(run_time * 12.0) % 2 == 0)
-    var ratio := clampf(av / vmax, 0.0, 1.0)
-    var gf := ratio * 5.0
+    var ratio: float = clampf(av / vmax, 0.0, 1.0)
+    var gf: float = ratio * 5.0
     rpm = lerpf(rpm, 0.25 + 0.5 * (gf - floorf(gf)) + 0.2 * ratio, minf(1.0, 6.0 * dt))
     _apply_car_transform()
     _update_camera(dt)
 
 func _track_constrain(dt: float) -> void:
-    var n := tpos.size()
-    var best := prog_i
-    var bd := 1.0e18
+    var n: int = tpos.size()
+    var best: int = prog_i
+    var bd: float = 1.0e18
     for i in range(maxi(0, prog_i - 6), mini(n - 1, prog_i + 10) + 1):
-        var dx := pos.x - tpos[i].x
-        var dz := pos.z - tpos[i].z
-        var d := dx * dx + dz * dz
+        var dx: float = pos.x - tpos[i].x
+        var dz: float = pos.z - tpos[i].z
+        var d: float = dx * dx + dz * dz
         if d < bd:
             bd = d
             best = i
     prog_i = best
-    var h := thead[best]
-    var rd := _rvec(h)
-    var td := _tvec(h)
+    var h: float = thead[best]
+    var rd: Vector3 = _rvec(h)
+    var td: Vector3 = _tvec(h)
     var rel := Vector3(pos.x - tpos[best].x, 0.0, pos.z - tpos[best].z)
-    var lat := rel.dot(rd)
+    var lat: float = rel.dot(rd)
     progress = float(best) * STEP + rel.dot(td)
-    var lim := ROAD_HALF - car_half.x - 0.15
+    var lim: float = ROAD_HALF - car_half.x - 0.15
     if absf(lat) > lim:
-        var s := signf(lat)
+        var s: float = signf(lat)
         pos -= rd * s * (absf(lat) - lim)
-        var vl := vel.dot(rd)
+        var vl: float = vel.dot(rd)
         if vl * s > 0.0:
             vel -= rd * vl
         speed *= maxf(0.0, 1.0 - 1.5 * dt)
@@ -1698,9 +1728,9 @@ func _track_constrain(dt: float) -> void:
 
 func _check_items() -> void:
     var f := Vector3(-sin(yaw), 0.0, -cos(yaw))
-    var off := maxf(car_half.y - 0.7, 0.3)
-    var pf := pos + f * off
-    var pb := pos - f * off
+    var off: float = maxf(car_half.y - 0.7, 0.3)
+    var pf: Vector3 = pos + f * off
+    var pb: Vector3 = pos - f * off
     for c in coin_nodes:
         if not c["alive"]:
             continue
@@ -1720,7 +1750,7 @@ func _check_items() -> void:
         var op: Vector3 = o["pos"]
         if absf(op.x - pos.x) > 6.0 or absf(op.z - pos.z) > 6.0:
             continue
-        var dd := minf(Vector2(pf.x - op.x, pf.z - op.z).length(), Vector2(pb.x - op.x, pb.z - op.z).length())
+        var dd: float = minf(Vector2(pf.x - op.x, pf.z - op.z).length(), Vector2(pb.x - op.x, pb.z - op.z).length())
         if dd < car_half.x * 0.85 + 0.85:
             o["alive"] = false
             (o["node"] as Node3D).visible = false
@@ -1737,9 +1767,9 @@ func _check_items() -> void:
 func _update_camera(dt: float) -> void:
     cam_yaw = lerp_angle(cam_yaw, yaw, minf(1.0, 3.5 * dt))
     var back := Vector3(sin(cam_yaw), 0.0, cos(cam_yaw))
-    var ratio := clampf(speed / _vmax(), 0.0, 1.0)
+    var ratio: float = clampf(speed / _vmax(), 0.0, 1.0)
     var target := Vector3(pos.x, y, pos.z)
-    var cp := target + back * (8.0 + ratio * 2.5) + Vector3(0.0, 3.4 + y * 0.3, 0.0)
+    var cp: Vector3 = target + back * (8.0 + ratio * 2.5) + Vector3(0.0, 3.4 + y * 0.3, 0.0)
     if shake > 0.0:
         cp += Vector3(randf() - 0.5, randf() - 0.5, 0.0) * shake * 0.6
     camera_3d.position = cp
@@ -1748,8 +1778,8 @@ func _update_camera(dt: float) -> void:
 # ======================= ФИНИШ / РЕЗУЛЬТАТ =======================
 
 func _finish_race(ok: bool) -> void:
-    var reward := 0
-    var bonus := 0
+    var reward: int = 0
+    var bonus: int = 0
     if ok:
         finishes += 1
         reward = int(MAPS[map_id]["reward"])
@@ -1767,7 +1797,7 @@ func _finish_race(ok: bool) -> void:
 
 func _show_result() -> void:
     _clear_ui()
-    var ok := bool(last_result.get("ok", false))
+    var ok: bool = bool(last_result.get("ok", false))
     var vb := _center_box()
     if ok:
         vb.add_child(_clabel("ФИНИШ!", 56, GOLD))
@@ -1822,24 +1852,24 @@ func _build_hud() -> void:
     kl.custom_minimum_size = Vector2(190, 0)
     kl.position = Vector2(0, 126)
     gauge.add_child(kl)
-    var sz := 128.0
-    var gap := 14.0
-    var mg := 24.0
+    var sz: float = 128.0
+    var gap: float = 14.0
+    var mg: float = 24.0
     var steer_acts: Array = ["left", "right"]
     if bool(controls["swap_lr"]):
         steer_acts.reverse()
     var pedal_acts: Array = ["brake", "gas"]
     if bool(controls["swap_pedals"]):
         pedal_acts.reverse()
-    var steer_x := mg
-    var pedal_x := vp.x - mg - sz * 2.0 - gap
+    var steer_x: float = mg
+    var pedal_x: float = vp.x - mg - sz * 2.0 - gap
     if bool(controls["swap_sides"]):
         steer_x = pedal_x
         pedal_x = mg
-    var py := vp.y - sz - mg
+    var py: float = vp.y - sz - mg
     for k in range(2):
-        _add_pad(steer_acts[k], Rect2(steer_x + k * (sz + gap), py, sz, sz))
-        _add_pad(pedal_acts[k], Rect2(pedal_x + k * (sz + gap), py, sz, sz))
+        _add_pad(str(steer_acts[k]), Rect2(steer_x + float(k) * (sz + gap), py, sz, sz))
+        _add_pad(str(pedal_acts[k]), Rect2(pedal_x + float(k) * (sz + gap), py, sz, sz))
     _update_hud()
 
 func _add_pad(action: String, rect: Rect2) -> void:
@@ -1868,17 +1898,18 @@ func _update_hud() -> void:
         status_label.text = "%s   %.2f / %.1f км   %s" % [MAPS[map_id]["name"], maxf(progress, 0.0) / 1000.0, TRACK_LEN / 1000.0, _fmt_time(run_time)]
     speed_label.text = str(int(absf(speed) * 3.6))
     for a in touch_pads:
-        touch_pads[a].color = Color(1, 1, 1, 0.4) if _pressed(a) else Color(0, 0, 0, 0.35)
+        var pad: ColorRect = touch_pads[a]
+        pad.color = Color(1, 1, 1, 0.4) if _pressed(str(a)) else Color(0, 0, 0, 0.35)
     gauge.queue_redraw()
 
 func _draw_gauge() -> void:
     var c := Vector2(95, 95)
     gauge.draw_circle(c, 92.0, Color(0, 0, 0, 0.45))
-    var a0 := deg_to_rad(135.0)
-    var sweep := deg_to_rad(270.0)
+    var a0: float = deg_to_rad(135.0)
+    var sweep: float = deg_to_rad(270.0)
     gauge.draw_arc(c, 78.0, a0, a0 + sweep, 64, Color(1, 1, 1, 0.25), 10.0)
-    var f := clampf(absf(speed) * 3.6 / GAUGE_MAX_KMH, 0.0, 1.0)
+    var f: float = clampf(absf(speed) * 3.6 / GAUGE_MAX_KMH, 0.0, 1.0)
     if f > 0.01:
         gauge.draw_arc(c, 78.0, a0, a0 + sweep * f, 64, Color(0.2, 1.0, 0.3).lerp(Color(1, 0.2, 0.1), f), 10.0)
-    var ang := a0 + sweep * f
+    var ang: float = a0 + sweep * f
     gauge.draw_line(c, c + Vector2(cos(ang), sin(ang)) * 70.0, Color.WHITE, 4.0)
