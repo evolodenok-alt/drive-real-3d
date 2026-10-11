@@ -1,21 +1,21 @@
 extends Node3D
 
 # ======================= НАСТРОЙКИ =======================
-const ROAD_LENGTH := 300.0
 const ROAD_HALF := 6.0
 const LANES := [-4.2, -2.1, 0.0, 2.1, 4.2]
-const FIRST_ROW_Z := 40.0
-const ROW_GAP_MIN := 20.0
-const ROW_GAP_MAX := 30.0
-const OBSTACLE_CHANCE := 0.5
+const STEP := 4.0
+const TRACK_LEN := 3000.0
+const FREE_HALF := 1000.0
 const SHADOWS := true
 const START_COINS := 0
 const REWARD_EVERY_3 := 5000
+const COIN_VALUE := 25
 const SAVE_PATH := "user://save.json"
 const GAUGE_MAX_KMH := 300.0
 const GRAVITY := 18.0
 const MAX_HITS := 3
 const UPGRADE_COST := 800
+const TURBO_COST := 20000
 const NORMAL_MAX_KMH := 170.0
 const TURBO_MAX_KMH := 1000.0
 const GOLD := Color(1, 0.85, 0.2)
@@ -40,6 +40,13 @@ const CARS := [
     {"name": "Пикап", "info": "Мощный грузовичок", "price": 15000, "mass": 1100.0, "engine": 1.4, "speed": 1.05, "grip": 1.1, "wheel": 0.44, "len": 4.8, "wid": 2.0, "color": "e08a1a"},
     {"name": "Суперкар", "info": "Самый быстрый", "price": 15000, "mass": 900.0, "engine": 1.7, "speed": 1.5, "grip": 1.3, "wheel": 0.36, "len": 4.6, "wid": 2.1, "color": "f2d11b"},
 ]
+
+# Карты для заработка монет (каждая 3 км, с поворотами влево/вправо)
+const MAPS := [
+    {"name": "Зелёная долина", "info": "Плавные повороты, зелёные поля", "reward": 1000, "seed": 11, "ground": "2f7d32", "trees": "1f6d24", "curve": 0.5, "a_min": 20.0, "a_max": 45.0, "c_min": 25, "c_max": 40, "obst": 0.40},
+    {"name": "Жаркая пустыня", "info": "Повороты резче, больше препятствий", "reward": 2000, "seed": 22, "ground": "d8b66a", "trees": "8a9a3a", "curve": 0.65, "a_min": 35.0, "a_max": 70.0, "c_min": 28, "c_max": 42, "obst": 0.50},
+    {"name": "Снежный серпантин", "info": "Крутые повороты. Для опытных!", "reward": 3500, "seed": 33, "ground": "e8eef5", "trees": "dfeaf2", "curve": 0.75, "a_min": 50.0, "a_max": 85.0, "c_min": 32, "c_max": 50, "obst": 0.55},
+]
 # ======================= ДАННЫЕ ИГРЫ =======================
 var coins := START_COINS
 var finishes := 0
@@ -56,13 +63,16 @@ var selected_upgrade := "Мотор"
 var paint_h := 0.6
 var paint_s := 0.8
 var paint_v := 0.9
+var flash := ""
 
 var mode := "menu"
+var scene_kind := ""
 var free_mode := false
+var map_id := 0
 var car: CharacterBody3D
 var vis: Node3D
-var wheel_spins: Array[Node3D] = []
-var wheel_steers: Array[Node3D] = []
+var wheel_spins: Array = []
+var wheel_steers: Array = []
 var preview_car: Node3D
 var preview_id := -1
 var camera_3d: Camera3D
@@ -74,10 +84,20 @@ var tail_mat: StandardMaterial3D
 var body_mat: StandardMaterial3D
 var preview_body_mat: StandardMaterial3D
 
+# движение
+var pos := Vector3.ZERO
+var prev_pos := Vector3.ZERO
+var vel := Vector3.ZERO
+var y := 0.0
+var vy := 0.0
+var grounded := true
+var climb_rate := 0.0
+var pitch := 0.0
+var roll := 0.0
 var speed := 0.0
 var yaw := 0.0
+var cam_yaw := 0.0
 var steer_vis := 0.0
-var cam_back := Vector3(0, 0, 1)
 var drifting := false
 var rpm := 0.3
 var gas_amt := 0.0
@@ -93,7 +113,16 @@ var run_coins := 0
 var hits := 0
 var invincible := 0.0
 var shake := 0.0
+var best_jump := 0.0
+var takeoff_pos := Vector3.ZERO
 var obstacles: Array = []
+var coin_nodes: Array = []
+var ramps: Array = []
+var boosts: Array = []
+var tpos := PackedVector3Array()
+var thead := PackedFloat32Array()
+var prog_i := 3
+var progress := 0.0
 var car_half := Vector2(1.0, 2.0)
 var wheel_r := 0.4
 
@@ -404,6 +433,8 @@ func _on_viewport_resized() -> void:
     match mode:
         "menu":
             show_menu()
+        "maps":
+            show_maps()
         "settings":
             show_settings()
         "controls":
@@ -570,29 +601,202 @@ func _pair(a: Button, b: Button) -> HBoxContainer:
     return hb
 
 func _side_box(w: float) -> VBoxContainer:
+    var mc := MarginContainer.new()
+    mc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    ui.add_child(mc)
+    mc.set_anchors_preset(Control.PRESET_FULL_RECT)
+    for s in ["left", "right", "top", "bottom"]:
+        mc.add_theme_constant_override("margin_" + s, 40)
     var vb := VBoxContainer.new()
     vb.custom_minimum_size = Vector2(w, 0)
+    vb.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+    vb.size_flags_vertical = Control.SIZE_SHRINK_CENTER
     vb.add_theme_constant_override("separation", 10)
-    vb.alignment = BoxContainer.ALIGNMENT_CENTER
-    ui.add_child(vb)
-    vb.set_anchors_and_offsets_preset(Control.PRESET_LEFT_WIDE, Control.PRESET_MODE_MINSIZE, 30)
+    mc.add_child(vb)
     return vb
 
 func _center_box() -> VBoxContainer:
     var dim := ColorRect.new()
-    dim.color = Color(0, 0, 0, 0.5)
-    dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+    dim.color = Color(0, 0, 0, 0.45)
     dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
     ui.add_child(dim)
+    dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+    var cc := CenterContainer.new()
+    cc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    ui.add_child(cc)
+    cc.set_anchors_preset(Control.PRESET_FULL_RECT)
     var vb := VBoxContainer.new()
     vb.add_theme_constant_override("separation", 12)
-    vb.alignment = BoxContainer.ALIGNMENT_CENTER
-    vb.custom_minimum_size = Vector2(460, 0)
-    ui.add_child(vb)
-    vb.set_anchors_preset(Control.PRESET_CENTER)
-    vb.grow_horizontal = Control.GROW_DIRECTION_BOTH
-    vb.grow_vertical = Control.GROW_DIRECTION_BOTH
+    cc.add_child(vb)
     return vb
+# ======================= ГЕОМЕТРИЯ =======================
+
+func _rvec(h: float) -> Vector3:
+    return Vector3(cos(h), 0.0, -sin(h))
+
+func _tvec(h: float) -> Vector3:
+    return Vector3(-sin(h), 0.0, -cos(h))
+
+func _mat(col: Color, metal: float = 0.0, rough: float = 0.8) -> StandardMaterial3D:
+    var m := StandardMaterial3D.new()
+    m.albedo_color = col
+    m.metallic = metal
+    m.roughness = rough
+    m.cull_mode = BaseMaterial3D.CULL_DISABLED
+    return m
+
+func _tri(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, n: Vector3) -> void:
+    if (b - a).cross(c - a).dot(n) > 0.0:
+        var t := b
+        b = c
+        c = t
+    for v in [a, b, c]:
+        st.set_normal(n)
+        st.add_vertex(v)
+
+func _quad(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3, n: Vector3) -> void:
+    _tri(st, a, b, c, n)
+    _tri(st, a, c, d, n)
+
+func _add_box(parent: Node, size: Vector3, p: Vector3, mat: Material) -> MeshInstance3D:
+    var mi := MeshInstance3D.new()
+    var bm := BoxMesh.new()
+    bm.size = size
+    mi.mesh = bm
+    mi.material_override = mat
+    mi.position = p
+    parent.add_child(mi)
+    return mi
+
+func _add_mesh(st: SurfaceTool, col: Color) -> void:
+    var mi := MeshInstance3D.new()
+    mi.mesh = st.commit()
+    mi.material_override = _mat(col, 0.0, 0.9)
+    mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+    world_root.add_child(mi)
+
+func _add_multi(mm: MultiMesh, mat: Material) -> void:
+    var mmi := MultiMeshInstance3D.new()
+    mmi.multimesh = mm
+    mmi.material_override = mat
+    world_root.add_child(mmi)
+
+func _make_trees(positions: Array, crown_col: Color, rng: RandomNumberGenerator) -> void:
+    var cnt := positions.size()
+    if cnt == 0:
+        return
+    var trunk := MultiMesh.new()
+    trunk.transform_format = MultiMesh.TRANSFORM_3D
+    var cm := CylinderMesh.new()
+    cm.top_radius = 0.25
+    cm.bottom_radius = 0.38
+    cm.height = 3.0
+    trunk.mesh = cm
+    trunk.instance_count = cnt
+    var crown := MultiMesh.new()
+    crown.transform_format = MultiMesh.TRANSFORM_3D
+    var sm := SphereMesh.new()
+    sm.radius = 2.0
+    sm.height = 3.6
+    crown.mesh = sm
+    crown.instance_count = cnt
+    for i in range(cnt):
+        var p: Vector3 = positions[i]
+        var s := rng.randf_range(0.8, 1.6)
+        var bs := Basis.from_scale(Vector3(s, s, s))
+        trunk.set_instance_transform(i, Transform3D(bs, p + Vector3(0, 1.5 * s, 0)))
+        crown.set_instance_transform(i, Transform3D(bs, p + Vector3(0, 4.2 * s, 0)))
+    _add_multi(trunk, _mat(Color(0.3, 0.18, 0.1)))
+    _add_multi(crown, _mat(crown_col, 0.0, 0.9))
+
+# ======================= МОДЕЛЬ МАШИНЫ =======================
+
+func _build_car(id: int, col: Color, with_smoke: bool) -> Dictionary:
+    var L := _car_f(id, "len")
+    var W := _car_f(id, "wid")
+    var R := _car_f(id, "wheel")
+    var prof: Array = [[0.6, 0.55, 0.55, 0.05], [0.5, 0.42, 0.45, 0.08], [0.75, 0.65, 0.65, 0.1], [0.7, 0.6, 0.35, -0.12], [0.45, 0.38, 0.42, 0.02]][id]
+    var bh: float = prof[0]
+    var ch: float = prof[1]
+    var cl: float = prof[2]
+    var cz: float = prof[3]
+    var root := Node3D.new()
+    var bmat := _mat(col, 0.5, 0.35)
+    var glass := _mat(Color(0.07, 0.09, 0.13), 0.8, 0.1)
+    var tail := _mat(Color(0.7, 0.0, 0.0))
+    tail.emission_enabled = true
+    tail.emission = Color(1, 0.05, 0.05)
+    tail.emission_energy_multiplier = 0.6
+    var head := _mat(Color(1, 0.95, 0.7))
+    head.emission_enabled = true
+    head.emission = Color(1, 0.95, 0.7)
+    var tire := _mat(Color(0.05, 0.05, 0.05))
+    var hub := _mat(Color(0.7, 0.7, 0.75), 0.8, 0.3)
+    var by := R * 0.9
+    _add_box(root, Vector3(W, bh, L), Vector3(0, by + bh * 0.5, 0), bmat)
+    _add_box(root, Vector3(W * 0.82, ch, L * cl), Vector3(0, by + bh + ch * 0.5, L * cz), glass)
+    _add_box(root, Vector3(W * 0.84, 0.06, L * cl), Vector3(0, by + bh + ch, L * cz), bmat)
+    for sx in [-1.0, 1.0]:
+        _add_box(root, Vector3(0.4, 0.18, 0.08), Vector3(sx * W * 0.34, by + bh * 0.7, L * 0.5), tail)
+        _add_box(root, Vector3(0.4, 0.16, 0.08), Vector3(sx * W * 0.34, by + bh * 0.7, -L * 0.5), head)
+    if id == 1 or id == 4:
+        _add_box(root, Vector3(W * 0.9, 0.06, 0.4), Vector3(0, by + bh + 0.25, L * 0.46), bmat)
+        for sx in [-1.0, 1.0]:
+            _add_box(root, Vector3(0.06, 0.25, 0.1), Vector3(sx * W * 0.3, by + bh + 0.12, L * 0.46), bmat)
+    if id == 3:
+        _add_box(root, Vector3(W * 0.8, 0.03, L * 0.34), Vector3(0, by + bh + 0.016, L * 0.3), glass)
+    var spins: Array = []
+    var steers: Array = []
+    for sx in [-1.0, 1.0]:
+        for fz in [-1.0, 1.0]:
+            var steer := Node3D.new()
+            steer.position = Vector3(sx * (W * 0.5 - 0.12), R, fz * L * 0.32)
+            var spin := Node3D.new()
+            steer.add_child(spin)
+            var mi := MeshInstance3D.new()
+            var cyl := CylinderMesh.new()
+            cyl.top_radius = R
+            cyl.bottom_radius = R
+            cyl.height = 0.32
+            cyl.radial_segments = 20
+            mi.mesh = cyl
+            mi.rotation_degrees = Vector3(0, 0, 90)
+            mi.material_override = tire
+            spin.add_child(mi)
+            _add_box(spin, Vector3(0.34, R * 1.5, 0.1), Vector3.ZERO, hub)
+            root.add_child(steer)
+            spins.append(spin)
+            if fz < 0.0:
+                steers.append(steer)
+    var sm: CPUParticles3D = null
+    if with_smoke:
+        sm = CPUParticles3D.new()
+        sm.amount = 24
+        sm.lifetime = 1.2
+        sm.emitting = false
+        var sph := SphereMesh.new()
+        sph.radius = 0.28
+        sph.height = 0.56
+        sph.radial_segments = 8
+        sph.rings = 4
+        var smat := StandardMaterial3D.new()
+        smat.albedo_color = Color(0.75, 0.75, 0.75, 0.5)
+        smat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+        smat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+        sph.material = smat
+        sm.mesh = sph
+        sm.direction = Vector3(0, 0.4, 1)
+        sm.spread = 25.0
+        sm.initial_velocity_min = 1.0
+        sm.initial_velocity_max = 2.5
+        sm.gravity = Vector3(0, 0.6, 0)
+        sm.scale_amount_min = 0.6
+        sm.scale_amount_max = 1.5
+        sm.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+        sm.position = Vector3(0, by + 0.2, L * 0.5)
+        root.add_child(sm)
+    return {"root": root, "body": bmat, "tail": tail, "spins": spins, "steers": steers, "smoke": sm}
+# ======================= СЦЕНЫ И МЕНЮ =======================
 
 func _clear_world() -> void:
     for c in world_root.get_children():
@@ -600,245 +804,253 @@ func _clear_world() -> void:
     car = null
     vis = null
     smoke = null
-    preview_car = null
     tail_mat = null
     body_mat = null
-    obstacles.clear()
-    wheel_spins.clear()
-    wheel_steers.clear()
+    preview_car = null
+    preview_id = -1
+    preview_body_mat = null
+    wheel_spins = []
+    wheel_steers = []
+    obstacles = []
+    coin_nodes = []
+    ramps = []
+    boosts = []
+    scene_kind = ""
+
+func _enter_showroom() -> void:
+    if scene_kind != "showroom":
+        _clear_world()
+        scene_kind = "showroom"
+        var fl := MeshInstance3D.new()
+        var cm := CylinderMesh.new()
+        cm.top_radius = 7.0
+        cm.bottom_radius = 7.0
+        cm.height = 0.2
+        fl.mesh = cm
+        fl.position = Vector3(0, -0.1, 0)
+        fl.material_override = _mat(Color(0.22, 0.24, 0.3), 0.3, 0.5)
+        world_root.add_child(fl)
+    camera_3d.fov = 55.0
+    camera_3d.position = Vector3(1.0, 2.2, 8.0)
+    camera_3d.look_at(Vector3(-1.6, 0.7, 0.0), Vector3.UP)
 
 func _show_preview(id: int) -> void:
-    _clear_world()
-    var ground := MeshInstance3D.new()
-    var pm := PlaneMesh.new()
-    pm.size = Vector2(80, 80)
-    ground.mesh = pm
-    ground.material_override = _mat(Color(0.35, 0.37, 0.4))
-    world_root.add_child(ground)
-    preview_car = Node3D.new()
-    var mats := _build_car_visual(id, preview_car)
-    preview_body_mat = mats["body"]
-    var cd: Dictionary = CARS[id]
-    var r := float(cd["wheel"])
-    for i in range(4):
-        var holder := Node3D.new()
-        holder.position = _wheel_pos(i, float(cd["len"]), float(cd["wid"])) + Vector3(0, -0.2, 0)
-        preview_car.add_child(holder)
-        _add_wheel_mesh(holder, r)
-    preview_car.position = Vector3(0, r + 0.2, 0)
-    world_root.add_child(preview_car)
+    if preview_car != null and is_instance_valid(preview_car) and preview_id == id:
+        preview_body_mat.albedo_color = car_colors[id]
+        return
+    if preview_car != null and is_instance_valid(preview_car):
+        preview_car.queue_free()
+    var d := _build_car(id, car_colors[id], false)
+    preview_car = d["root"]
+    preview_body_mat = d["body"]
     preview_id = id
-    camera_3d.fov = 70.0
-    camera_3d.position = Vector3(5.5, 2.4, 7.5)
-    camera_3d.look_at(Vector3(-1.8, 0.6, 0), Vector3.UP)
-# ======================= ЭКРАНЫ МЕНЮ =======================
+    preview_car.rotation.y = 0.5
+    world_root.add_child(preview_car)
 
+func _fmt_time(t: float) -> String:
+    return "%d:%02d.%d" % [floori(t / 60.0), int(t) % 60, int(fmod(t, 1.0) * 10.0)]
+
+func _take_flash() -> Label:
+    garage_msg = _label(flash, 22, GOLD)
+    flash = ""
+    return garage_msg
+
+# ---------- Главное меню ----------
 func show_menu() -> void:
     mode = "menu"
-    free_mode = false
-    held.clear()
+    _enter_showroom()
+    _show_preview(current_car)
     _engine_sounds(false)
     _update_music()
+    _clear_ui()
+    var vb := _center_box()
+    vb.add_child(_clabel("ГОНКИ", 68, GOLD))
+    vb.add_child(_clabel("Монеты: %d" % coins, 30))
+    vb.add_child(_button("Играть", show_maps, 380, 62))
+    vb.add_child(_button("Свободная игра", start_free, 380, 62))
+    vb.add_child(_button("Гараж", show_garage, 380, 62))
+    vb.add_child(_button("Настройки", show_settings, 380, 62))
+
+# ---------- Выбор карты ----------
+func show_maps() -> void:
+    mode = "maps"
+    _enter_showroom()
     _show_preview(current_car)
     _clear_ui()
-    var box := _side_box(380)
-    box.add_child(_label("ГОНКИ", 56, GOLD))
-    coins_label = _label("Монеты: %d" % coins, 30)
-    box.add_child(coins_label)
-    box.add_child(_button("Играть", func(): start_run(false)))
-    box.add_child(_button("Свободная езда", func(): start_run(true)))
-    box.add_child(_button("Гараж", func(): garage_sel = current_car; show_garage()))
-    box.add_child(_button("Управление", func(): show_controls()))
-    box.add_child(_button("Настройки", func(): show_settings()))
+    var vb := _center_box()
+    vb.add_child(_clabel("ВЫБЕРИ КАРТУ", 46, GOLD))
+    vb.add_child(_clabel("Монеты: %d" % coins, 28))
+    for i in range(MAPS.size()):
+        var m: Dictionary = MAPS[i]
+        vb.add_child(_button("%s  •  3 км  •  награда %d" % [m["name"], m["reward"]], start_race.bind(i), 600, 62))
+        vb.add_child(_clabel(str(m["info"]), 20))
+    vb.add_child(_button("Назад", show_menu, 600, 56))
 
+# ---------- Настройки ----------
 func show_settings() -> void:
     mode = "settings"
-    _engine_sounds(false)
-    _update_music()
+    _enter_showroom()
+    _show_preview(current_car)
     _clear_ui()
-    var box := _center_box()
-    box.add_child(_clabel("Настройки", 44, GOLD))
-    var items := [
-        ["music_on", "Музыка"],
-        ["engine_on", "Звук мотора"],
-        ["brake_on", "Звук тормоза"],
-        ["drift_on", "Звук дрифта"],
-        ["click_on", "Клики кнопок"],
-    ]
+    var vb := _center_box()
+    vb.add_child(_clabel("НАСТРОЙКИ", 44))
+    var items := [["music_on", "Музыка"], ["engine_on", "Звук двигателя"], ["brake_on", "Звук тормоза"], ["drift_on", "Звук заноса"], ["click_on", "Звук кнопок"]]
     for it in items:
-        var cb := CheckButton.new()
-        cb.text = str(it[1])
-        cb.button_pressed = bool(settings[it[0]])
-        cb.focus_mode = Control.FOCUS_NONE
-        cb.add_theme_font_size_override("font_size", 26)
-        cb.toggled.connect(_on_setting_toggled.bind(str(it[0])))
-        box.add_child(cb)
-    box.add_child(_label("Громкость", 26))
+        var on := bool(settings[it[0]])
+        vb.add_child(_button("%s: %s" % [it[1], "ВКЛ" if on else "ВЫКЛ"], _toggle_setting.bind(it[0]), 440, 50))
+    vb.add_child(_clabel("Громкость", 24))
     var sl := HSlider.new()
     sl.min_value = 0.0
     sl.max_value = 1.0
     sl.step = 0.05
     sl.value = float(settings["volume"])
-    sl.custom_minimum_size = Vector2(0, 30)
-    sl.value_changed.connect(_on_volume_changed)
-    box.add_child(sl)
-    box.add_child(_button("Назад", func(): show_menu()))
+    sl.custom_minimum_size = Vector2(440, 32)
+    sl.value_changed.connect(_on_volume)
+    sl.drag_ended.connect(_on_volume_end)
+    vb.add_child(sl)
+    vb.add_child(_button("Управление", show_controls, 440, 52))
+    vb.add_child(_button("Назад", show_menu, 440, 52))
 
-func _on_setting_toggled(pressed: bool, key: String) -> void:
-    settings[key] = pressed
+func _toggle_setting(key: String) -> void:
+    settings[key] = not bool(settings[key])
     _save_game()
     _update_music()
-    _play_click()
+    show_settings()
 
-func _on_volume_changed(v: float) -> void:
+func _on_volume(v: float) -> void:
     settings["volume"] = v
     _apply_volume()
+
+func _on_volume_end(_changed: bool) -> void:
     _save_game()
 
+# ---------- Управление ----------
 func show_controls() -> void:
     mode = "controls"
-    held.clear()
-    _engine_sounds(false)
-    _update_music()
+    _enter_showroom()
+    _show_preview(current_car)
     _clear_ui()
-    var box := _center_box()
-    box.add_child(_clabel("Управление", 44, GOLD))
+    var vb := _center_box()
+    vb.add_child(_clabel("УПРАВЛЕНИЕ", 44))
+    vb.add_child(_clabel("Стрелки тоже работают", 20))
     for a in ["gas", "brake", "left", "right"]:
-        var txt: String = str(ACTION_NAMES[a]) + ": "
+        var t := str(ACTION_NAMES[a]) + ": "
         if waiting_key == a:
-            txt += "нажми клавишу..."
+            t += "нажми клавишу..."
         else:
-            txt += OS.get_keycode_string(int(controls[a]) as Key)
-        box.add_child(_button(txt, _start_rebind.bind(a), 340.0, 48.0))
-    box.add_child(_clabel("Экранные кнопки (телефон):", 24))
-    var items := [
-        ["swap_sides", "Руль справа, педали слева"],
-        ["swap_lr", "Поменять < и > местами"],
-        ["swap_pedals", "Поменять газ и тормоз местами"],
-    ]
-    for it in items:
-        var cb := CheckButton.new()
-        cb.text = str(it[1])
-        cb.button_pressed = bool(controls[it[0]])
-        cb.focus_mode = Control.FOCUS_NONE
-        cb.add_theme_font_size_override("font_size", 24)
-        cb.toggled.connect(_on_control_toggled.bind(str(it[0])))
-        box.add_child(cb)
-    box.add_child(_button("Назад", func(): waiting_key = ""; show_menu(), 340.0, 48.0))
+            t += OS.get_keycode_string(int(controls[a]))
+        vb.add_child(_button(t, _start_rebind.bind(a), 440, 50))
+    vb.add_child(_button("Педали: " + ("слева" if bool(controls["swap_sides"]) else "справа"), _toggle_control.bind("swap_sides"), 440, 50))
+    vb.add_child(_button("Влево/вправо: " + ("поменяны" if bool(controls["swap_lr"]) else "обычные"), _toggle_control.bind("swap_lr"), 440, 50))
+    vb.add_child(_button("Газ/тормоз: " + ("поменяны" if bool(controls["swap_pedals"]) else "обычные"), _toggle_control.bind("swap_pedals"), 440, 50))
+    vb.add_child(_button("Назад", show_settings, 440, 52))
 
-func _start_rebind(action: String) -> void:
-    waiting_key = action
+func _start_rebind(a: String) -> void:
+    waiting_key = a
     show_controls()
 
-func _on_control_toggled(pressed: bool, key: String) -> void:
-    controls[key] = pressed
+func _toggle_control(k: String) -> void:
+    controls[k] = not bool(controls[k])
     _save_game()
-    _play_click()
-# ======================= ГАРАЖ =======================
+    show_controls()
 
-func _car_text(id: int) -> String:
-    var cd: Dictionary = CARS[id]
-    var t := "%s — %s\n" % [str(cd["name"]), str(cd["info"])]
-    t += "Мотор %d%%  Скорость %d%%  Сцепление %d%%\n" % [int(_car_f(id, "engine") * 100.0), int(_car_f(id, "speed") * 100.0), int(_car_f(id, "grip") * 100.0)]
-    if owned[id]:
-        t += "Куплена"
-        if bool(car_turbo[id]):
-            t += "  |  Турбо: ВКЛ"
-    else:
-        t += "Цена: %d" % int(cd["price"])
-    return t
-
+# ---------- Гараж ----------
 func show_garage() -> void:
     mode = "garage"
+    _enter_showroom()
+    _show_preview(garage_sel)
     _engine_sounds(false)
     _update_music()
-    _show_preview(garage_sel)
     _clear_ui()
-    var box := _side_box(440)
-    box.add_child(_label("Гараж", 44, GOLD))
-    coins_label = _label("Монеты: %d" % coins, 28)
-    box.add_child(coins_label)
-    detail_label = _label(_car_text(garage_sel), 22)
-    detail_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-    detail_label.custom_minimum_size = Vector2(400, 0)
-    box.add_child(detail_label)
-    garage_msg = _label("", 22, Color(1, 0.6, 0.4))
-    box.add_child(garage_msg)
-    box.add_child(_pair(_button("<", func(): _garage_step(-1), 100, 48), _button(">", func(): _garage_step(1), 100, 48)))
+    var c: Dictionary = CARS[garage_sel]
+    var vb := _side_box(380)
+    vb.add_child(_label("ГАРАЖ", 40))
+    vb.add_child(_label("Монеты: %d" % coins, 28, GOLD))
+    vb.add_child(_label(str(c["name"]), 34))
+    vb.add_child(_label(str(c["info"]), 22))
+    vb.add_child(_label("Мотор: %d%%" % int(float(c["engine"]) * 100.0), 22))
+    vb.add_child(_label("Скорость: %d%%" % int(float(c["speed"]) * 100.0), 22))
+    vb.add_child(_label("Сцепление: %d%%" % int(float(c["grip"]) * 100.0), 22))
+    vb.add_child(_pair(_button("<", _garage_step.bind(-1), 100, 50), _button(">", _garage_step.bind(1), 100, 50)))
+    var b: Button
     if owned[garage_sel]:
-        if current_car == garage_sel:
-            box.add_child(_label("Выбрана", 24, Color(0.5, 1, 0.5)))
-        else:
-            box.add_child(_button("Выбрать", func(): _select_car(), 340, 48))
-        box.add_child(_pair(_button("Улучшения", func(): _open_upgrades(), 100, 48), _button("Покраска", func(): _open_paint(), 100, 48)))
-        var tt := "Турбо: ВЫКЛ"
-        if bool(car_turbo[garage_sel]):
-            tt = "Турбо: ВКЛ (до 1000 км/ч)"
-        box.add_child(_button(tt, func(): _toggle_turbo(), 340, 48))
+        var sel := current_car == garage_sel
+        b = _button("• Выбрана" if sel else "Выбрать", _garage_action, 380, 52)
+        b.disabled = sel
     else:
-        box.add_child(_button("Купить за %d" % int(CARS[garage_sel]["price"]), func(): _buy_car(), 340, 48))
-    box.add_child(_button("Назад", func(): show_menu(), 340, 48))
+        b = _button("Купить за %d" % int(c["price"]), _garage_action, 380, 52)
+    vb.add_child(b)
+    vb.add_child(_button("Улучшения", _open_upgrades, 380, 52))
+    vb.add_child(_button("Покраска", _open_paint, 380, 52))
+    vb.add_child(_take_flash())
+    vb.add_child(_button("Назад", show_menu, 380, 52))
 
 func _garage_step(d: int) -> void:
     garage_sel = wrapi(garage_sel + d, 0, CARS.size())
     show_garage()
 
-func _select_car() -> void:
-    current_car = garage_sel
-    _save_game()
-    show_garage()
-
-func _buy_car() -> void:
-    var price := int(CARS[garage_sel]["price"])
-    if coins >= price:
-        coins -= price
+func _garage_action() -> void:
+    var c: Dictionary = CARS[garage_sel]
+    if owned[garage_sel]:
+        current_car = garage_sel
+        flash = "Машина выбрана"
+    elif coins >= int(c["price"]):
+        coins -= int(c["price"])
         owned[garage_sel] = true
         current_car = garage_sel
-        _save_game()
-        show_garage()
+        flash = "Куплено!"
     else:
-        garage_msg.text = "Не хватает монет"
-
-func _toggle_turbo() -> void:
-    car_turbo[garage_sel] = not bool(car_turbo[garage_sel])
+        flash = "Не хватает монет"
     _save_game()
     show_garage()
 
 func _open_upgrades() -> void:
+    if not owned[garage_sel]:
+        flash = "Сначала купи машину"
+        show_garage()
+        return
     current_car = garage_sel
     show_upgrades()
 
 func _open_paint() -> void:
+    if not owned[garage_sel]:
+        flash = "Сначала купи машину"
+        show_garage()
+        return
     current_car = garage_sel
     show_paint()
 
-func _upgrade_cost(lv: int) -> int:
-    return UPGRADE_COST * lv
-
+# ---------- Улучшения ----------
 func show_upgrades() -> void:
     mode = "upgrades"
-    _engine_sounds(false)
+    _enter_showroom()
     _show_preview(current_car)
     _clear_ui()
-    var box := _side_box(460)
-    box.add_child(_label("Улучшения", 44, GOLD))
-    coins_label = _label("Монеты: %d" % coins, 28)
-    box.add_child(coins_label)
+    var vb := _side_box(400)
+    vb.add_child(_label("УЛУЧШЕНИЯ", 40))
+    vb.add_child(_label("Монеты: %d" % coins, 28, GOLD))
     for n in UPGRADE_NAMES:
-        var mark := "  "
+        var bt := _button("%s   %d/5" % [n, _lv(n)], _select_upgrade.bind(n), 380, 48)
         if n == selected_upgrade:
-            mark = "> "
-        box.add_child(_button("%s%s   ур. %d/5" % [mark, n, _lv(n)], _select_upgrade.bind(n), 400, 46))
-    detail_label = _label(str(UPGRADE_INFO[selected_upgrade]), 24)
-    box.add_child(detail_label)
-    garage_msg = _label("", 22, Color(1, 0.6, 0.4))
-    box.add_child(garage_msg)
+            bt.add_theme_color_override("font_color", GOLD)
+        vb.add_child(bt)
     var lv := _lv(selected_upgrade)
-    if lv >= 5:
-        box.add_child(_label("Максимальный уровень", 24, Color(0.5, 1, 0.5)))
+    detail_label = _label(str(UPGRADE_INFO[selected_upgrade]), 22)
+    vb.add_child(detail_label)
+    if lv < 5:
+        vb.add_child(_button("Улучшить: %d" % (UPGRADE_COST * lv), _buy_upgrade, 380, 52))
     else:
-        box.add_child(_button("Улучшить за %d" % _upgrade_cost(lv), func(): _buy_upgrade(), 400, 48))
-    box.add_child(_button("Назад", func(): garage_sel = current_car; show_garage(), 400, 48))
+        var mx := _button("Максимум", _buy_upgrade, 380, 52)
+        mx.disabled = true
+        vb.add_child(mx)
+    if bool(car_turbo[current_car]):
+        var tb := _button("Турбо куплено (свободная игра)", _buy_turbo, 380, 48)
+        tb.disabled = true
+        vb.add_child(tb)
+    else:
+        vb.add_child(_button("Турбо 1000 км/ч: %d" % TURBO_COST, _buy_turbo, 380, 48))
+    vb.add_child(_take_flash())
+    vb.add_child(_button("Назад", show_garage, 380, 52))
 
 func _select_upgrade(n: String) -> void:
     selected_upgrade = n
@@ -846,45 +1058,58 @@ func _select_upgrade(n: String) -> void:
 
 func _buy_upgrade() -> void:
     var lv := _lv(selected_upgrade)
-    var cost := _upgrade_cost(lv)
     if lv >= 5:
         return
-    if coins < cost:
-        garage_msg.text = "Не хватает монет"
-        return
-    coins -= cost
-    car_levels[current_car][selected_upgrade] = lv + 1
-    _save_game()
+    var cost := UPGRADE_COST * lv
+    if coins >= cost:
+        coins -= cost
+        car_levels[current_car][selected_upgrade] = lv + 1
+        flash = "Улучшено!"
+        _save_game()
+    else:
+        flash = "Не хватает монет"
     show_upgrades()
 
+func _buy_turbo() -> void:
+    if bool(car_turbo[current_car]):
+        return
+    if coins >= TURBO_COST:
+        coins -= TURBO_COST
+        car_turbo[current_car] = true
+        flash = "Турбо куплено!"
+        _save_game()
+    else:
+        flash = "Не хватает монет"
+    show_upgrades()
+
+# ---------- Покраска ----------
 func show_paint() -> void:
     mode = "paint"
-    _engine_sounds(false)
+    _enter_showroom()
     _show_preview(current_car)
     _clear_ui()
-    var c: Color = car_colors[current_car]
-    paint_h = c.h
-    paint_s = c.s
-    paint_v = c.v
-    var box := _side_box(460)
-    box.add_child(_label("Покраска", 44, GOLD))
-    _add_slider(box, "Оттенок", paint_h, "h")
-    _add_slider(box, "Насыщенность", paint_s, "s")
-    _add_slider(box, "Яркость", paint_v, "v")
-    box.add_child(_button("Готово", func(): _save_game(); garage_sel = current_car; show_garage(), 400, 48))
+    var col: Color = car_colors[current_car]
+    paint_h = col.h
+    paint_s = col.s
+    paint_v = col.v
+    var vb := _side_box(380)
+    vb.add_child(_label("ПОКРАСКА", 40))
+    vb.add_child(_label(str(CARS[current_car]["name"]), 28))
+    var vals := {"h": paint_h, "s": paint_s, "v": paint_v}
+    for it in [["Оттенок", "h"], ["Насыщенность", "s"], ["Яркость", "v"]]:
+        vb.add_child(_label(it[0], 24))
+        var sl := HSlider.new()
+        sl.min_value = 0.0
+        sl.max_value = 1.0
+        sl.step = 0.01
+        sl.value = float(vals[it[1]])
+        sl.custom_minimum_size = Vector2(360, 32)
+        sl.value_changed.connect(_on_paint.bind(it[1]))
+        vb.add_child(sl)
+    vb.add_child(_button("Цвет по умолчанию", _paint_default, 380, 50))
+    vb.add_child(_button("Готово", _paint_done, 380, 52))
 
-func _add_slider(box: VBoxContainer, title: String, value: float, which: String) -> void:
-    box.add_child(_label(title, 24))
-    var sl := HSlider.new()
-    sl.min_value = 0.0
-    sl.max_value = 1.0
-    sl.step = 0.01
-    sl.value = value
-    sl.custom_minimum_size = Vector2(400, 30)
-    sl.value_changed.connect(_on_paint_changed.bind(which))
-    box.add_child(sl)
-
-func _on_paint_changed(v: float, which: String) -> void:
+func _on_paint(v: float, which: String) -> void:
     match which:
         "h":
             paint_h = v
@@ -896,578 +1121,764 @@ func _on_paint_changed(v: float, which: String) -> void:
     car_colors[current_car] = col
     if preview_body_mat != null:
         preview_body_mat.albedo_color = col
-# ======================= МОДЕЛЬ МАШИНЫ =======================
 
-func _mat(color: Color, rough: float = 0.7) -> StandardMaterial3D:
-    var m := StandardMaterial3D.new()
-    m.albedo_color = color
-    m.roughness = rough
-    return m
+func _paint_default() -> void:
+    car_colors[current_car] = Color.html(str(CARS[current_car]["color"]))
+    show_paint()
 
-func _box(parent: Node3D, size: Vector3, pos: Vector3, mat: Material) -> MeshInstance3D:
-    var mi := MeshInstance3D.new()
-    var bm := BoxMesh.new()
-    bm.size = size
-    mi.mesh = bm
-    mi.material_override = mat
-    mi.position = pos
-    parent.add_child(mi)
-    return mi
+func _paint_done() -> void:
+    _save_game()
+    show_garage()
+# ======================= ТРАССА (повороты влево/вправо) =======================
 
-func _build_car_visual(id: int, parent: Node3D) -> Dictionary:
-    var cd: Dictionary = CARS[id]
-    var ln := float(cd["len"])
-    var wd := float(cd["wid"])
-    var bmat := _mat(car_colors[id], 0.35)
-    var glass := _mat(Color(0.08, 0.1, 0.14), 0.1)
-    var tmat := _mat(Color(0.5, 0.0, 0.0), 0.4)
-    tmat.emission_enabled = true
-    tmat.emission = Color(0.9, 0.0, 0.0)
-    tmat.emission_energy_multiplier = 0.6
-    var head := _mat(Color(1, 0.95, 0.7), 0.3)
-    _box(parent, Vector3(wd, 0.5, ln), Vector3(0, 0.1, 0), bmat)
-    _box(parent, Vector3(wd * 0.82, 0.45, ln * 0.42), Vector3(0, 0.55, ln * 0.05), glass)
-    _box(parent, Vector3(wd * 0.8, 0.06, ln * 0.38), Vector3(0, 0.8, ln * 0.05), bmat)
-    _box(parent, Vector3(0.38, 0.15, 0.08), Vector3(-wd * 0.33, 0.2, ln * 0.5 + 0.02), tmat)
-    _box(parent, Vector3(0.38, 0.15, 0.08), Vector3(wd * 0.33, 0.2, ln * 0.5 + 0.02), tmat)
-    _box(parent, Vector3(0.38, 0.15, 0.08), Vector3(-wd * 0.33, 0.2, -ln * 0.5 - 0.02), head)
-    _box(parent, Vector3(0.38, 0.15, 0.08), Vector3(wd * 0.33, 0.2, -ln * 0.5 - 0.02), head)
-    if id == 1 or id == 4:
-        _box(parent, Vector3(wd * 0.9, 0.08, 0.4), Vector3(0, 0.75, ln * 0.5 - 0.2), bmat)
-        _box(parent, Vector3(0.1, 0.3, 0.1), Vector3(-wd * 0.3, 0.55, ln * 0.5 - 0.2), glass)
-        _box(parent, Vector3(0.1, 0.3, 0.1), Vector3(wd * 0.3, 0.55, ln * 0.5 - 0.2), glass)
-    return {"body": bmat, "tail": tmat}
+func _gen_track(id: int) -> void:
+    var m: Dictionary = MAPS[id]
+    var rng := RandomNumberGenerator.new()
+    rng.seed = int(m["seed"])
+    var n := int(TRACK_LEN / STEP)
+    var dh := PackedFloat32Array()
+    dh.resize(n)
+    var i := 18
+    var hsum := 0.0
+    while i < n - 18:
+        if rng.randf() < float(m["curve"]):
+            var cl := rng.randi_range(int(m["c_min"]), int(m["c_max"]))
+            var ang := deg_to_rad(rng.randf_range(float(m["a_min"]), float(m["a_max"])))
+            var sgn := 1.0 if rng.randf() < 0.5 else -1.0
+            if absf(hsum) > deg_to_rad(100.0):
+                sgn = -signf(hsum)
+            for k in range(cl):
+                if i + k < n - 18:
+                    dh[i + k] = sgn * ang / float(cl)
+            hsum += sgn * ang
+            i += cl
+        else:
+            i += rng.randi_range(4, 12)
+    tpos = PackedVector3Array()
+    thead = PackedFloat32Array()
+    var p := Vector3.ZERO
+    var h := 0.0
+    tpos.append(p)
+    thead.append(h)
+    for k in range(n):
+        h += dh[k]
+        p += _tvec(h) * STEP
+        tpos.append(p)
+        thead.append(h)
 
-func _wheel_pos(i: int, ln: float, wd: float) -> Vector3:
-    var x := wd * 0.5 - 0.05
-    if i % 2 == 0:
-        x = -x
-    var z := ln * 0.32
-    if i < 2:
-        z = -z
-    return Vector3(x, 0.0, z)
-
-func _add_wheel_mesh(holder: Node3D, r: float) -> Node3D:
-    var spin := Node3D.new()
-    holder.add_child(spin)
-    var mi := MeshInstance3D.new()
-    var cm := CylinderMesh.new()
-    cm.top_radius = r
-    cm.bottom_radius = r
-    cm.height = 0.34
-    cm.radial_segments = 16
-    mi.mesh = cm
-    mi.rotation_degrees = Vector3(0, 0, 90)
-    mi.material_override = _mat(Color(0.05, 0.05, 0.05), 0.9)
-    spin.add_child(mi)
-    _box(spin, Vector3(0.36, r * 1.2, 0.08), Vector3.ZERO, _mat(Color(0.7, 0.7, 0.72)))
-    return spin
-
-func _spawn_car() -> void:
-    var cd: Dictionary = CARS[current_car]
-    var ln := float(cd["len"])
-    var wd := float(cd["wid"])
-    wheel_r = float(cd["wheel"])
-    car = CharacterBody3D.new()
-    vis = Node3D.new()
-    car.add_child(vis)
-    var mats := _build_car_visual(current_car, vis)
-    body_mat = mats["body"]
-    tail_mat = mats["tail"]
-    for i in range(4):
-        var holder := Node3D.new()
-        holder.position = _wheel_pos(i, ln, wd) + Vector3(0, -0.2, 0)
-        vis.add_child(holder)
-        var spin := _add_wheel_mesh(holder, wheel_r)
-        wheel_spins.append(spin)
-        if i < 2:
-            wheel_steers.append(holder)
-    car.position = Vector3(0, wheel_r + 0.2, 0)
-    car_half = Vector2(wd * 0.5, ln * 0.5)
-    world_root.add_child(car)
-    smoke = CPUParticles3D.new()
-    smoke.position = Vector3(0, 0.1, ln * 0.5)
-    smoke.amount = 40
-    smoke.lifetime = 1.1
-    smoke.emitting = false
-    smoke.direction = Vector3(0, 1, 0)
-    smoke.spread = 30.0
-    smoke.initial_velocity_min = 1.0
-    smoke.initial_velocity_max = 2.5
-    smoke.gravity = Vector3(0, 0.6, 0)
-    var sm := SphereMesh.new()
-    sm.radius = 0.22
-    sm.height = 0.44
-    sm.radial_segments = 8
-    sm.rings = 4
-    var smat := _mat(Color(0.7, 0.7, 0.7, 0.5), 1.0)
-    smat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-    smat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-    sm.material = smat
-    smoke.mesh = sm
-    car.add_child(smoke)
-# ======================= МИР: ДОРОГА, ФИНИШ, ПРЕПЯТСТВИЯ =======================
-
-func _build_world() -> void:
+func _build_race_world(id: int) -> void:
+    var m: Dictionary = MAPS[id]
+    _gen_track(id)
+    var mn := Vector2(1.0e9, 1.0e9)
+    var mx := Vector2(-1.0e9, -1.0e9)
+    for p in tpos:
+        mn.x = minf(mn.x, p.x)
+        mn.y = minf(mn.y, p.z)
+        mx.x = maxf(mx.x, p.x)
+        mx.y = maxf(mx.y, p.z)
     var ground := MeshInstance3D.new()
     var pm := PlaneMesh.new()
-    pm.size = Vector2(2000, 2000)
+    pm.size = Vector2(9000, 9000)
     ground.mesh = pm
-    ground.material_override = _mat(Color(0.18, 0.4, 0.18), 1.0)
-    ground.position = Vector3(0, -0.1, -ROAD_LENGTH * 0.5)
+    ground.position = Vector3((mn.x + mx.x) * 0.5, -0.02, (mn.y + mx.y) * 0.5)
+    ground.material_override = _mat(Color.html(str(m["ground"])), 0.0, 1.0)
+    ground.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
     world_root.add_child(ground)
-    if free_mode:
-        _build_free_world()
+    _build_road_meshes()
+    _gate(1, "СТАРТ", Color(0.1, 0.65, 0.2))
+    _gate(tpos.size() - 1, "ФИНИШ", Color(0.85, 0.1, 0.1))
+    _place_items(m)
+    var rng := RandomNumberGenerator.new()
+    rng.seed = int(m["seed"]) + 99
+    var tp: Array = []
+    for i in range(0, tpos.size(), 4):
+        for s in [-1.0, 1.0]:
+            var lat: float = s * rng.randf_range(11.0, 45.0)
+            tp.append(tpos[i] + _rvec(thead[i]) * lat + _tvec(thead[i]) * rng.randf_range(-6.0, 6.0))
+    _make_trees(tp, Color.html(str(m["trees"])), rng)
+
+func _build_road_meshes() -> void:
+    var st_road := SurfaceTool.new()
+    var st_line := SurfaceTool.new()
+    var st_wa := SurfaceTool.new()
+    var st_wb := SurfaceTool.new()
+    for s in [st_road, st_line, st_wa, st_wb]:
+        s.begin(Mesh.PRIMITIVE_TRIANGLES)
+    var up := Vector3(0, 0.01, 0)
+    var up2 := Vector3(0, 0.02, 0)
+    var wh := Vector3(0, 0.9, 0)
+    for i in range(tpos.size() - 1):
+        var a: Vector3 = tpos[i]
+        var b: Vector3 = tpos[i + 1]
+        var ra := _rvec(thead[i])
+        var rb := _rvec(thead[i + 1])
+        _quad(st_road, a - ra * ROAD_HALF + up, a + ra * ROAD_HALF + up, b + rb * ROAD_HALF + up, b - rb * ROAD_HALF + up, Vector3.UP)
+        for off in [-ROAD_HALF + 0.5, ROAD_HALF - 0.5]:
+            _quad(st_line, a + ra * (off - 0.1) + up2, a + ra * (off + 0.1) + up2, b + rb * (off + 0.1) + up2, b + rb * (off - 0.1) + up2, Vector3.UP)
+        if i % 2 == 0:
+            var mid := a.lerp(b, 0.5)
+            var rm := ra.lerp(rb, 0.5).normalized()
+            for off2 in [-3.15, -1.05, 1.05, 3.15]:
+                _quad(st_line, a + ra * (off2 - 0.09) + up2, a + ra * (off2 + 0.09) + up2, mid + rm * (off2 + 0.09) + up2, mid + rm * (off2 - 0.09) + up2, Vector3.UP)
+        var stw := st_wa if ((i >> 1) & 1) == 0 else st_wb
+        for sd in [-1.0, 1.0]:
+            var e0 := a + ra * sd * (ROAD_HALF + 0.35)
+            var e1 := b + rb * sd * (ROAD_HALF + 0.35)
+            _quad(stw, e0, e1, e1 + wh, e0 + wh, -ra * sd)
+            _quad(stw, e0 + wh - ra * sd * 0.2, e1 + wh - rb * sd * 0.2, e1 + wh + rb * sd * 0.2, e0 + wh + ra * sd * 0.2, Vector3.UP)
+    _add_mesh(st_road, Color(0.13, 0.14, 0.17))
+    _add_mesh(st_line, Color(0.9, 0.9, 0.9))
+    _add_mesh(st_wa, Color(0.95, 0.95, 0.95))
+    _add_mesh(st_wb, Color(0.85, 0.12, 0.12))
+
+func _gate(i: int, txt: String, col: Color) -> void:
+    var g := Node3D.new()
+    g.position = tpos[i]
+    g.rotation.y = thead[i]
+    var m := _mat(col, 0.2, 0.6)
+    _add_box(g, Vector3(0.6, 7.0, 0.6), Vector3(-ROAD_HALF - 0.8, 3.5, 0), m)
+    _add_box(g, Vector3(0.6, 7.0, 0.6), Vector3(ROAD_HALF + 0.8, 3.5, 0), m)
+    _add_box(g, Vector3(ROAD_HALF * 2.0 + 2.2, 1.4, 0.6), Vector3(0, 7.2, 0), m)
+    _add_box(g, Vector3(ROAD_HALF * 2.0, 0.03, 1.4), Vector3(0, 0.035, 0), _mat(Color.WHITE))
+    var l := Label3D.new()
+    l.text = txt
+    l.font_size = 96
+    l.pixel_size = 0.012
+    l.outline_size = 12
+    l.position = Vector3(0, 7.2, 0.35)
+    g.add_child(l)
+    world_root.add_child(g)
+
+func _place_items(m: Dictionary) -> void:
+    obstacles = []
+    coin_nodes = []
+    var rng := RandomNumberGenerator.new()
+    rng.seed = int(m["seed"]) + 7
+    var n := tpos.size()
+    var i := 22
+    while i < n - 20:
+        var lanes: Array = [0, 1, 2, 3, 4]
+        lanes.shuffle()
+        var base: Vector3 = tpos[i]
+        var rv := _rvec(thead[i])
+        if rng.randf() < float(m["obst"]):
+            var cnt := rng.randi_range(1, 3)
+            for k in range(cnt):
+                _add_obstacle(base + rv * float(LANES[lanes[k]]), rng.randi_range(0, 1) == 0, thead[i])
+        elif rng.randf() < 0.45:
+            var ln: int = lanes[0]
+            for k in range(4):
+                var j := mini(i + k, n - 1)
+                _add_coin(tpos[j] + _rvec(thead[j]) * float(LANES[ln]))
+        i += rng.randi_range(5, 8)
+
+func _add_obstacle(p: Vector3, crate: bool, h: float) -> void:
+    var nd := Node3D.new()
+    nd.position = p
+    nd.rotation.y = h
+    if crate:
+        _add_box(nd, Vector3(1.5, 1.5, 1.5), Vector3(0, 0.75, 0), _mat(Color(0.55, 0.35, 0.15)))
     else:
-        _build_race_world()
+        _add_box(nd, Vector3(2.0, 0.9, 0.45), Vector3(0, 0.75, 0), _mat(Color(0.85, 0.1, 0.1)))
+        _add_box(nd, Vector3(0.15, 0.7, 0.15), Vector3(-0.8, 0.35, 0), _mat(Color.WHITE))
+        _add_box(nd, Vector3(0.15, 0.7, 0.15), Vector3(0.8, 0.35, 0), _mat(Color.WHITE))
+    world_root.add_child(nd)
+    obstacles.append({"pos": p, "node": nd, "alive": true})
+
+func _add_coin(p: Vector3) -> void:
+    var nd := Node3D.new()
+    nd.position = p + Vector3(0, 1.0, 0)
+    var mi := MeshInstance3D.new()
+    var cy := CylinderMesh.new()
+    cy.top_radius = 0.5
+    cy.bottom_radius = 0.5
+    cy.height = 0.12
+    mi.mesh = cy
+    mi.rotation_degrees = Vector3(90, 0, 0)
+    var gm := _mat(GOLD, 0.8, 0.3)
+    gm.emission_enabled = true
+    gm.emission = GOLD
+    gm.emission_energy_multiplier = 0.5
+    mi.material_override = gm
+    mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+    nd.add_child(mi)
+    world_root.add_child(nd)
+    coin_nodes.append({"pos": nd.position, "node": nd, "alive": true})
+
+# ======================= СВОБОДНАЯ КАРТА (трамплины) =======================
+
+func _free_road(size: Vector3, p: Vector3, mat: Material) -> void:
+    var mi := _add_box(world_root, size, p, mat)
+    mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+func _add_ramp(p: Vector3, yw: float, L: float, W: float, H: float) -> void:
+    var st := SurfaceTool.new()
+    st.begin(Mesh.PRIMITIVE_TRIANGLES)
+    var A := Vector3(-W * 0.5, 0, 0)
+    var B := Vector3(W * 0.5, 0, 0)
+    var C := Vector3(-W * 0.5, H, -L)
+    var D := Vector3(W * 0.5, H, -L)
+    var E := Vector3(-W * 0.5, 0, -L)
+    var F := Vector3(W * 0.5, 0, -L)
+    _quad(st, A, B, D, C, Vector3(0, L, H).normalized())
+    _quad(st, E, F, D, C, Vector3(0, 0, -1))
+    _tri(st, A, C, E, Vector3(-1, 0, 0))
+    _tri(st, B, D, F, Vector3(1, 0, 0))
+    var mi := MeshInstance3D.new()
+    mi.mesh = st.commit()
+    var hue := clampf(H / 16.0, 0.0, 1.0)
+    mi.material_override = _mat(Color.from_hsv(0.08 + hue * 0.7, 0.85, 0.95), 0.1, 0.6)
+    mi.position = p
+    mi.rotation.y = yw
+    world_root.add_child(mi)
+    ramps.append({"pos": p, "yaw": yw, "L": L, "W": W, "H": H, "rad": sqrt(L * L + W * W * 0.25) + 1.0})
+
+func _add_boost(p: Vector3) -> void:
+    boosts.append(p)
+    var bm := _mat(Color(1.0, 0.6, 0.1), 0.0, 0.5)
+    bm.emission_enabled = true
+    bm.emission = Color(1.0, 0.5, 0.0)
+    bm.emission_energy_multiplier = 1.5
+    var mi := _add_box(world_root, Vector3(6, 0.04, 8), p + Vector3(0, 0.03, 0), bm)
+    mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 func _build_free_world() -> void:
-    _box(world_root, Vector3(260, 0.1, 260), Vector3(0, -0.05, 0), _mat(Color(0.14, 0.15, 0.17)))
-    for i in range(50):
-        var a := randf() * TAU
-        var d := randf_range(150.0, 260.0)
-        _make_tree(Vector3(cos(a) * d, 0, sin(a) * d))
+    ramps = []
+    boosts = []
+    var ground := MeshInstance3D.new()
+    var pm := PlaneMesh.new()
+    pm.size = Vector2(2600, 2600)
+    ground.mesh = pm
+    ground.position.y = -0.02
+    ground.material_override = _mat(Color.html("3b8f3b"), 0.0, 1.0)
+    ground.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+    world_root.add_child(ground)
+    var road := _mat(Color(0.14, 0.15, 0.18), 0.0, 0.9)
+    for k in range(-7, 8):
+        var c := float(k) * 130.0
+        _free_road(Vector3(2000, 0.02, 7), Vector3(0, -0.005, c), road)
+        _free_road(Vector3(7, 0.02, 2000), Vector3(c, -0.005, 0), road)
+    var wm := _mat(Color(0.6, 0.25, 0.2))
+    for s in [-1.0, 1.0]:
+        _add_box(world_root, Vector3(2000, 8, 2), Vector3(0, 4, s * FREE_HALF), wm)
+        _add_box(world_root, Vector3(2, 8, 2000), Vector3(s * FREE_HALF, 4, 0), wm)
+    var rng := RandomNumberGenerator.new()
+    rng.seed = 4242
+    # ряд трамплинов вперёд (растут по высоте) + ускорители перед ними
+    for k in range(10):
+        var h := 1.5 + k * 0.6
+        var rz := -80.0 - k * 60.0
+        _add_ramp(Vector3(0, 0, rz), 0.0, 10.0 + h * 3.0, 9.0, h)
+        _add_boost(Vector3(0, 0, rz + 22.0))
+    # мега-трамплин
+    _add_boost(Vector3(0, 0, -668))
+    _add_ramp(Vector3(0, 0, -700), 0.0, 48.0, 16.0, 15.0)
+    # стена трамплинов позади
+    for k in range(-3, 4):
+        _add_ramp(Vector3(k * 20.0, 0, 200), PI, 24.0, 12.0, 5.0)
+    # кольцо трамплинов вокруг старта
+    for k in range(12):
+        var a := TAU * float(k) / 12.0
+        var rp := Vector3(cos(a), 0, sin(a)) * 150.0
+        _add_ramp(rp, atan2(rp.x, rp.z), 20.0, 10.0, 4.5)
+    # случайные трамплины по всей карте
+    var made := 0
+    while made < 60:
+        var p := Vector3(rng.randf_range(-900, 900), 0, rng.randf_range(-900, 900))
+        if Vector2(p.x, p.z).length() < 90.0:
+            continue
+        var h2 := rng.randf_range(2.0, 7.0)
+        _add_ramp(p, rng.randf_range(0.0, TAU), 10.0 + h2 * 2.5, rng.randf_range(7.0, 12.0), h2)
+        made += 1
+    # деревья за стенами
+    var tp: Array = []
+    for k in range(160):
+        var t := rng.randf_range(-1000.0, 1000.0)
+        var d := FREE_HALF + rng.randf_range(15.0, 80.0)
+        match rng.randi_range(0, 3):
+            0:
+                tp.append(Vector3(t, 0, d))
+            1:
+                tp.append(Vector3(t, 0, -d))
+            2:
+                tp.append(Vector3(d, 0, t))
+            _:
+                tp.append(Vector3(-d, 0, t))
+    _make_trees(tp, Color.html("1f6d24"), rng)
 
-func _build_race_world() -> void:
-    var total := ROAD_LENGTH + 80.0
-    var cz := -ROAD_LENGTH * 0.5
-    _box(world_root, Vector3(ROAD_HALF * 2.0, 0.1, total), Vector3(0, -0.05, cz), _mat(Color(0.14, 0.15, 0.17)))
-    var curb := _mat(Color(0.55, 0.55, 0.58))
-    _box(world_root, Vector3(0.4, 0.15, total), Vector3(-ROAD_HALF - 0.2, 0.0, cz), curb)
-    _box(world_root, Vector3(0.4, 0.15, total), Vector3(ROAD_HALF + 0.2, 0.0, cz), curb)
-    var white := _mat(Color(0.9, 0.9, 0.9))
-    for lx in [-3.15, -1.05, 1.05, 3.15]:
-        var z := 30.0
-        while z > -(ROAD_LENGTH + 30.0):
-            _box(world_root, Vector3(0.12, 0.03, 3.0), Vector3(lx, 0.015, z), white)
-            z -= 8.0
-    _box(world_root, Vector3(ROAD_HALF * 2.0, 0.03, 0.6), Vector3(0, 0.02, 3.0), white)
-    _build_gate(-ROAD_LENGTH)
-    for i in range(70):
-        var side := 1.0
-        if randf() < 0.5:
-            side = -1.0
-        _make_tree(Vector3(side * randf_range(9.0, 30.0), 0, randf_range(-ROAD_LENGTH - 60.0, 40.0)))
-    _build_obstacles()
+func _ground_h(p: Vector3) -> float:
+    var best := 0.0
+    for r in ramps:
+        var rp: Vector3 = r["pos"]
+        var dx := p.x - rp.x
+        var dz := p.z - rp.z
+        var rad: float = r["rad"]
+        if dx * dx + dz * dz > rad * rad:
+            continue
+        var loc := Vector3(dx, 0.0, dz).rotated(Vector3.UP, -float(r["yaw"]))
+        var u := -loc.z / float(r["L"])
+        if u >= 0.0 and u <= 1.0 and absf(loc.x) <= float(r["W"]) * 0.5:
+            best = maxf(best, float(r["H"]) * u)
+    return best
+# ======================= СТАРТ ЗАЕЗДА =======================
 
-func _build_gate(z: float) -> void:
-    var red := _mat(Color(0.75, 0.08, 0.08))
-    _box(world_root, Vector3(0.7, 6.5, 0.7), Vector3(-ROAD_HALF - 0.6, 3.25, z), red)
-    _box(world_root, Vector3(0.7, 6.5, 0.7), Vector3(ROAD_HALF + 0.6, 3.25, z), red)
-    _box(world_root, Vector3(ROAD_HALF * 2.0 + 2.6, 1.3, 0.7), Vector3(0, 6.4, z), red)
-    _box(world_root, Vector3(ROAD_HALF * 2.0, 0.03, 1.0), Vector3(0, 0.02, z), _mat(Color(0.95, 0.95, 0.95)))
-    var lb := Label3D.new()
-    lb.text = "ФИНИШ"
-    lb.font_size = 128
-    lb.pixel_size = 0.012
-    lb.modulate = Color.WHITE
-    lb.outline_size = 12
-    lb.position = Vector3(0, 6.4, z + 0.4)
-    world_root.add_child(lb)
-
-func _make_tree(pos: Vector3) -> void:
-    var tree := Node3D.new()
-    var trunk := MeshInstance3D.new()
-    var cm := CylinderMesh.new()
-    cm.top_radius = 0.22
-    cm.bottom_radius = 0.28
-    cm.height = 2.4
-    trunk.mesh = cm
-    trunk.material_override = _mat(Color(0.35, 0.2, 0.1))
-    trunk.position = Vector3(0, 1.2, 0)
-    tree.add_child(trunk)
-    var crown := MeshInstance3D.new()
-    var sm := SphereMesh.new()
-    sm.radius = 1.4
-    sm.height = 2.8
-    crown.mesh = sm
-    crown.material_override = _mat(Color(0.05, randf_range(0.35, 0.5), 0.1))
-    crown.position = Vector3(0, 3.3, 0)
-    tree.add_child(crown)
-    tree.position = pos
-    world_root.add_child(tree)
-
-func _build_obstacles() -> void:
-    obstacles.clear()
-    var z := -FIRST_ROW_Z
-    while z > -(ROAD_LENGTH - 25.0):
-        var used: Array = []
-        for lx in LANES:
-            if randf() < OBSTACLE_CHANCE:
-                used.append(float(lx))
-        if used.size() >= LANES.size():
-            used.remove_at(randi() % used.size())
-        for ux in used:
-            _add_obstacle(float(ux), z)
-        z -= randf_range(ROW_GAP_MIN, ROW_GAP_MAX)
-
-func _add_obstacle(x: float, z: float) -> void:
-    var node := Node3D.new()
-    var hw := 0.8
-    var hl := 0.8
-    if randi() % 2 == 0:
-        _box(node, Vector3(1.6, 1.4, 1.6), Vector3(0, 0.7, 0), _mat(Color(0.55, 0.36, 0.16)))
-    else:
-        hw = 0.95
-        hl = 0.3
-        var red := _mat(Color(0.85, 0.15, 0.15))
-        _box(node, Vector3(1.9, 0.5, 0.5), Vector3(0, 0.9, 0), red)
-        _box(node, Vector3(0.15, 0.9, 0.15), Vector3(-0.7, 0.45, 0), _mat(Color(0.9, 0.9, 0.9)))
-        _box(node, Vector3(0.15, 0.9, 0.15), Vector3(0.7, 0.45, 0), _mat(Color(0.9, 0.9, 0.9)))
-    node.position = Vector3(x, 0, z)
-    world_root.add_child(node)
-    obstacles.append({"node": node, "x": x, "z": z, "hw": hw, "hl": hl, "hit": false})
-# ======================= ИГРА: ЗАПУСК И ФИЗИКА =======================
-
-func start_run(free: bool) -> void:
-    free_mode = free
-    mode = "playing"
-    held.clear()
-    _update_music()
+func start_race(id: int) -> void:
+    free_mode = false
+    map_id = id
     _clear_world()
-    _build_world()
+    scene_kind = "race"
+    _build_race_world(id)
     _spawn_car()
-    hits = 0
+    _reset_run()
+    _begin_run()
+
+func start_free() -> void:
+    free_mode = true
+    _clear_world()
+    scene_kind = "free"
+    _build_free_world()
+    _spawn_car()
+    _reset_run()
+    _begin_run()
+
+func _spawn_car() -> void:
+    var d := _build_car(current_car, car_colors[current_car], true)
+    car = CharacterBody3D.new()
+    vis = d["root"]
+    car.add_child(vis)
+    world_root.add_child(car)
+    body_mat = d["body"]
+    tail_mat = d["tail"]
+    wheel_spins = d["spins"]
+    wheel_steers = d["steers"]
+    smoke = d["smoke"]
+    car_half = Vector2(_car_f(current_car, "wid") * 0.5, _car_f(current_car, "len") * 0.5)
+    wheel_r = _car_f(current_car, "wheel")
+
+func _reset_run() -> void:
     speed = 0.0
-    yaw = 0.0
+    vel = Vector3.ZERO
+    y = 0.0
+    vy = 0.0
+    grounded = true
+    climb_rate = 0.0
+    pitch = 0.0
+    roll = 0.0
     steer_vis = 0.0
-    run_time = 0.0
-    run_coins = 0
-    invincible = 0.0
-    shake = 0.0
-    skid_amt = 0.0
     gas_amt = 0.0
     brake_amt = 0.0
-    drifting = false
-    cam_back = Vector3(0, 0, 1)
-    _update_camera(0.0, true)
+    skid_amt = 0.0
+    hits = 0
+    invincible = 0.0
+    shake = 0.0
+    run_time = 0.0
+    run_coins = 0
+    best_jump = 0.0
+    if free_mode:
+        pos = Vector3(0, 0, 60)
+        yaw = 0.0
+    else:
+        pos = tpos[3]
+        yaw = thead[3]
+        prog_i = 3
+        progress = 12.0
+    prev_pos = pos
+    cam_yaw = yaw
+
+func _begin_run() -> void:
+    mode = "playing"
+    _apply_car_transform()
+    _update_camera(1.0)
     _build_hud()
     _engine_sounds(true)
+    _update_music()
 
-func _respawn_car(_reset: bool) -> void:
+func _respawn_car(_reset_all: bool = true) -> void:
     if car == null:
         return
-    car.position = Vector3(0, wheel_r + 0.2, 0)
-    yaw = 0.0
-    speed = 0.0
-    cam_back = Vector3(0, 0, 1)
+    _reset_run()
+    _apply_car_transform()
+    _update_camera(1.0)
+
+func _apply_car_transform() -> void:
+    car.position = Vector3(pos.x, y, pos.z)
+    car.rotation.y = yaw
+    vis.rotation.x = pitch
+    vis.rotation.z = roll
+
+# ======================= ХАРАКТЕРИСТИКИ =======================
+
+func _vmax() -> float:
+    if free_mode and bool(car_turbo[current_car]):
+        return TURBO_MAX_KMH / 3.6
+    return NORMAL_MAX_KMH / 3.6 * _car_f(current_car, "speed") * (1.0 + 0.05 * float(_lv("Скорость") - 1))
+
+func _acc() -> float:
+    var a := 13.0 * _car_f(current_car, "engine") * (1.0 + 0.12 * float(_lv("Мотор") - 1)) * pow(1000.0 / _car_f(current_car, "mass"), 0.3)
+    if free_mode and bool(car_turbo[current_car]):
+        a *= 3.5
+    return a
+
+# ======================= ГЛАВНЫЙ ЦИКЛ =======================
 
 func _process(delta: float) -> void:
     var dt := minf(delta, 0.05)
-    if mode == "playing" and car != null:
-        _drive(dt)
+    if mode == "playing":
+        _update_race(dt)
         if mode == "playing":
-            _update_camera(dt, false)
-            _update_audio()
             _update_hud()
-    elif preview_car != null and is_instance_valid(preview_car) and mode in ["menu", "garage", "upgrades", "paint"]:
-        preview_car.rotate_y(dt * 0.6)
+            _update_audio()
+            for c in coin_nodes:
+                if c["alive"]:
+                    c["node"].rotation.y += dt * 3.0
+    elif preview_car != null and is_instance_valid(preview_car):
+        preview_car.rotation.y += dt * 0.5
 
-func _drive(dt: float) -> void:
-    var gas := _pressed("gas")
-    var brk := _pressed("brake")
-    var steer_in := 0.0
-    if _pressed("left"):
-        steer_in += 1.0
-    if _pressed("right"):
-        steer_in -= 1.0
-    var turbo: bool = bool(car_turbo[current_car])
-    var lv_m := float(_lv("Мотор"))
-    var lv_s := float(_lv("Подвеска"))
-    var lv_w := float(_lv("Колёса"))
-    var lv_v := float(_lv("Скорость"))
-    var lv_b := float(_lv("Тормоза"))
-    var top_kmh := NORMAL_MAX_KMH * _car_f(current_car, "speed") * (1.0 + 0.1 * (lv_v - 1.0))
-    var accel := 12.0 * _car_f(current_car, "engine") * (1.0 + 0.12 * (lv_m - 1.0))
-    if turbo:
-        top_kmh = TURBO_MAX_KMH
-        accel *= 5.0
-    var top := top_kmh / 3.6
-    var grip := _car_f(current_car, "grip") * (1.0 + 0.1 * (lv_w - 1.0))
-    var brake_f := 28.0 * (1.0 + 0.15 * (lv_b - 1.0))
-    # --- разгон, тормоз ---
-    if gas:
-        var ratio := maxf(speed, 0.0) / top
-        var k := clampf(1.0 - ratio * ratio, 0.03, 1.0)
-        speed = minf(speed + accel * k * dt, top)
-    if brk:
-        if speed > 0.5:
-            speed = maxf(speed - brake_f * dt, 0.0)
-        else:
-            speed = maxf(speed - 6.0 * dt, -8.0)
-    if not gas and not brk:
-        speed = move_toward(speed, 0.0, (3.0 + absf(speed) * 0.05) * dt)
-    # --- песок/трава ---
-    if not free_mode and absf(car.position.x) > ROAD_HALF + 0.3:
-        var lim := 14.0 * grip
-        if speed > lim:
-            speed = move_toward(speed, lim, 45.0 * dt)
-    # --- руление ---
-    var steer_rate := 1.7 * (0.8 + 0.2 * grip)
-    var sp_factor := clampf(absf(speed) / 6.0, 0.0, 1.0) / (1.0 + absf(speed) / 45.0)
-    var dirn := 1.0
-    if speed < 0.0:
-        dirn = -1.0
-    yaw += steer_in * steer_rate * sp_factor * dirn * dt
-    if not free_mode:
-        if steer_in == 0.0:
-            yaw = move_toward(yaw, 0.0, 1.2 * dt)
-        yaw = clampf(yaw, -0.8, 0.8)
-    steer_vis = lerpf(steer_vis, steer_in, minf(1.0, 10.0 * dt))
-    # --- движение ---
-    var fwd := Vector3(-sin(yaw), 0.0, -cos(yaw))
-    var prev_z := car.position.z
-    car.position += fwd * speed * dt
-    if not free_mode:
-        car.position.x = clampf(car.position.x, -30.0, 30.0)
-    car.position.y = wheel_r + 0.2
-    car.rotation.y = yaw
-    # --- визуальные эффекты ---
-    var roll_target := -steer_vis * 0.07 * clampf(speed / 25.0, 0.0, 1.0) * (1.6 - 0.1 * lv_s)
-    vis.rotation.z = lerpf(vis.rotation.z, roll_target, minf(1.0, 8.0 * dt))
-    var pitch_target := 0.0
-    if brk and speed > 3.0:
-        pitch_target = 0.04
-    elif gas:
-        pitch_target = -0.015
-    vis.rotation.x = lerpf(vis.rotation.x, pitch_target, minf(1.0, 6.0 * dt))
-    for w in wheel_steers:
-        w.rotation.y = steer_vis * 0.45
-    for sp in wheel_spins:
-        sp.rotation.x -= speed * dt / wheel_r
-    var target := absf(steer_in) * clampf((absf(speed) - 20.0) / 50.0, 0.0, 1.0) * (1.3 - 0.1 * lv_w)
-    if brk and speed > 25.0:
-        target = maxf(target, 0.6)
-    skid_amt = lerpf(skid_amt, clampf(target, 0.0, 1.0), minf(1.0, 8.0 * dt))
-    drifting = skid_amt > 0.3
-    if smoke != null:
-        smoke.emitting = drifting or (hits >= 2 and not free_mode)
-    rpm = 0.25 + 0.7 * (1.0 - exp(-absf(speed) / 40.0))
-    var gas_t := 0.0
-    if gas:
-        gas_t = 1.0
-    gas_amt = lerpf(gas_amt, gas_t, minf(1.0, 6.0 * dt))
-    var brake_t := 0.0
-    if brk and speed > 3.0:
-        brake_t = 1.0
-    brake_amt = lerpf(brake_amt, brake_t, minf(1.0, 10.0 * dt))
-    if tail_mat != null:
-        tail_mat.emission_energy_multiplier = 0.6 + 2.5 * brake_amt
+func _update_race(dt: float) -> void:
     run_time += dt
-    invincible -= dt
-    # --- препятствия и финиш ---
+    invincible = maxf(0.0, invincible - dt)
+    shake = maxf(0.0, shake - dt * 2.5)
+    var vmax := _vmax()
+    var g := _pressed("gas")
+    var b := _pressed("brake")
+    var st_in := 0.0
+    if _pressed("left"):
+        st_in += 1.0
+    if _pressed("right"):
+        st_in -= 1.0
+    gas_amt = move_toward(gas_amt, 1.0 if g else 0.0, dt * 4.0)
+    brake_amt = move_toward(brake_amt, 1.0 if b else 0.0, dt * 6.0)
+    steer_vis = move_toward(steer_vis, st_in, dt * 4.0)
+    var brk := 30.0 * (1.0 + 0.12 * float(_lv("Тормоза") - 1))
+    if grounded:
+        if g:
+            if speed < -0.5:
+                speed = move_toward(speed, 0.0, brk * dt)
+            else:
+                speed += _acc() * gas_amt * (1.0 - pow(clampf(speed / vmax, 0.0, 1.0), 3.0)) * dt
+        if b:
+            if speed > 0.5:
+                speed = maxf(0.0, speed - brk * brake_amt * dt)
+            elif not g:
+                speed = move_toward(speed, -8.0, 6.0 * dt)
+    if speed > 0.0:
+        var drag := (0.8 + 0.0006 * speed * speed) * (0.3 if g else 1.0)
+        speed = maxf(0.0, speed - drag * dt)
+    elif speed < 0.0:
+        speed = minf(0.0, speed + 3.0 * dt)
+    if speed > vmax:
+        speed = move_toward(speed, vmax, 20.0 * dt)
+    # РУЛЕНИЕ: машина по-настоящему поворачивается
+    var grip := _car_f(current_car, "grip") * (1.0 + 0.08 * float(_lv("Колёса") - 1))
+    var stab := 1.0 + 0.07 * float(_lv("Подвеска") - 1)
+    var av := absf(speed)
+    var rate := 2.1 * grip / (1.0 + av / 28.0)
+    if av < 2.0:
+        rate *= av / 2.0
+    if not grounded:
+        rate *= 0.3
+    yaw += steer_vis * rate * (1.0 if speed >= 0.0 else -1.0) * dt
+    # скольжение
+    var fwd := Vector3(-sin(yaw), 0.0, -cos(yaw))
+    var desired := fwd * speed
+    var gk := 9.0 * grip * stab
+    if not grounded:
+        gk = 0.8
+    vel = vel.lerp(desired, clampf(gk * dt, 0.0, 1.0))
+    var slip := (vel - desired).length()
+    skid_amt = 0.0
+    if av > 8.0 and grounded:
+        skid_amt = clampf((slip - 1.5) / 6.0, 0.0, 1.0)
+    drifting = skid_amt > 0.2
+    prev_pos = pos
+    pos += vel * dt
+    # границы
+    if free_mode:
+        var lim := FREE_HALF - 3.0
+        if absf(pos.x) > lim:
+            pos.x = clampf(pos.x, -lim, lim)
+            vel.x = 0.0
+            speed *= 0.7
+            shake = 0.3
+        if absf(pos.z) > lim:
+            pos.z = clampf(pos.z, -lim, lim)
+            vel.z = 0.0
+            speed *= 0.7
+            shake = 0.3
+        for bp in boosts:
+            if absf(pos.x - bp.x) < 3.5 and absf(pos.z - bp.z) < 4.5 and grounded:
+                speed = maxf(speed, vmax * 1.3)
+    else:
+        _track_constrain(dt)
+    # вертикаль (трамплины)
+    var gh := 0.0
+    if free_mode:
+        gh = _ground_h(pos)
+        if gh - y > 0.9:
+            pos = prev_pos
+            vel = Vector3.ZERO
+            speed = 0.0
+            shake = 0.5
+            gh = _ground_h(pos)
+    if grounded:
+        if gh < y - 0.08:
+            grounded = false
+            vy = maxf(climb_rate, 0.0)
+            takeoff_pos = pos
+        else:
+            climb_rate = (gh - y) / maxf(dt, 0.0001)
+            y = gh
+    else:
+        vy -= GRAVITY * dt
+        y += vy * dt
+        if y <= gh:
+            if vy < -5.0:
+                shake = clampf(-vy * 0.04, 0.2, 0.9)
+            best_jump = maxf(best_jump, Vector2(pos.x - takeoff_pos.x, pos.z - takeoff_pos.z).length())
+            y = gh
+            vy = 0.0
+            grounded = true
+            climb_rate = 0.0
+    var pt := 0.0
+    if grounded:
+        pt = atan2(climb_rate, maxf(av, 6.0))
+    else:
+        pt = atan2(vy, maxf(av, 8.0))
+    pitch = lerpf(pitch, pt, minf(1.0, 8.0 * dt))
+    roll = lerpf(roll, -steer_vis * clampf(av / vmax, 0.0, 1.0) * 0.12 / stab, minf(1.0, 6.0 * dt))
     if not free_mode:
-        _check_obstacles(prev_z, car.position.z)
+        _check_items()
         if mode != "playing":
             return
-        if car.position.z <= -ROAD_LENGTH:
-            _finish_run(true)
+        if progress >= TRACK_LEN - 2.0:
+            _finish_race(true)
+            return
+    # визуал и звук
+    for w in wheel_spins:
+        w.rotation.x -= speed / wheel_r * dt
+    for w in wheel_steers:
+        w.rotation.y = steer_vis * 0.45
+    tail_mat.emission_energy_multiplier = 3.0 if brake_amt > 0.1 else 0.6
+    smoke.emitting = skid_amt > 0.25 or hits >= 2
+    vis.visible = invincible <= 0.0 or (int(run_time * 12.0) % 2 == 0)
+    var ratio := clampf(av / vmax, 0.0, 1.0)
+    var gf := ratio * 5.0
+    rpm = lerpf(rpm, 0.25 + 0.5 * (gf - floorf(gf)) + 0.2 * ratio, minf(1.0, 6.0 * dt))
+    _apply_car_transform()
+    _update_camera(dt)
 
-func _check_obstacles(pz: float, nz: float) -> void:
-    if invincible > 0.0:
+func _track_constrain(dt: float) -> void:
+    var n := tpos.size()
+    var best := prog_i
+    var bd := 1.0e18
+    for i in range(maxi(0, prog_i - 6), mini(n - 1, prog_i + 10) + 1):
+        var dx := pos.x - tpos[i].x
+        var dz := pos.z - tpos[i].z
+        var d := dx * dx + dz * dz
+        if d < bd:
+            bd = d
+            best = i
+    prog_i = best
+    var h := thead[best]
+    var rd := _rvec(h)
+    var td := _tvec(h)
+    var rel := Vector3(pos.x - tpos[best].x, 0.0, pos.z - tpos[best].z)
+    var lat := rel.dot(rd)
+    progress = float(best) * STEP + rel.dot(td)
+    var lim := ROAD_HALF - car_half.x - 0.15
+    if absf(lat) > lim:
+        var s := signf(lat)
+        pos -= rd * s * (absf(lat) - lim)
+        var vl := vel.dot(rd)
+        if vl * s > 0.0:
+            vel -= rd * vl
+        speed *= maxf(0.0, 1.0 - 1.5 * dt)
+        yaw = lerp_angle(yaw, h, minf(1.0, 3.0 * dt))
+        shake = maxf(shake, 0.12)
+
+func _check_items() -> void:
+    var f := Vector3(-sin(yaw), 0.0, -cos(yaw))
+    var off := maxf(car_half.y - 0.7, 0.3)
+    var pf := pos + f * off
+    var pb := pos - f * off
+    for c in coin_nodes:
+        if not c["alive"]:
+            continue
+        var cp: Vector3 = c["pos"]
+        if Vector2(cp.x - pos.x, cp.z - pos.z).length() < 1.9:
+            c["alive"] = false
+            (c["node"] as Node3D).visible = false
+            run_coins += COIN_VALUE
+            if bool(settings["click_on"]):
+                click_player.pitch_scale = 1.7
+                click_player.play()
+    if invincible > 0.0 or y > 1.6:
         return
-    var zlo := minf(pz, nz) - car_half.y
-    var zhi := maxf(pz, nz) + car_half.y
     for o in obstacles:
-        if bool(o["hit"]):
+        if not o["alive"]:
             continue
-        var oz := float(o["z"])
-        var ohl := float(o["hl"])
-        if oz + ohl < zlo or oz - ohl > zhi:
+        var op: Vector3 = o["pos"]
+        if absf(op.x - pos.x) > 6.0 or absf(op.z - pos.z) > 6.0:
             continue
-        if absf(car.position.x - float(o["x"])) < float(o["hw"]) + car_half.x * 0.92:
-            _on_hit(o)
+        var dd := minf(Vector2(pf.x - op.x, pf.z - op.z).length(), Vector2(pb.x - op.x, pb.z - op.z).length())
+        if dd < car_half.x * 0.85 + 0.85:
+            o["alive"] = false
+            (o["node"] as Node3D).visible = false
+            hits += 1
+            speed *= 0.35
+            vel *= 0.35
+            invincible = 1.5
+            shake = 0.8
+            crash_player.play()
+            if hits >= MAX_HITS:
+                _finish_race(false)
             return
 
-func _on_hit(o: Dictionary) -> void:
-    o["hit"] = true
-    hits += 1
-    invincible = 0.6
-    speed *= 0.35
-    shake = 1.0
-    crash_player.play()
-    var base: Color = car_colors[current_car]
-    if body_mat != null:
-        body_mat.albedo_color = base.lerp(Color(0.08, 0.08, 0.08), 0.28 * float(hits))
-    var node: Node3D = o["node"]
-    var tw := node.create_tween()
-    tw.set_parallel(true)
-    tw.tween_property(node, "position", node.position + Vector3(randf_range(-6.0, 6.0), 3.0, -randf_range(8.0, 14.0)), 0.8)
-    tw.tween_property(node, "rotation", Vector3(randf() * 6.0, randf() * 6.0, randf() * 6.0), 0.8)
-    tw.chain().tween_callback(node.hide)
-    if hits >= MAX_HITS:
-        _finish_run(false)
+func _update_camera(dt: float) -> void:
+    cam_yaw = lerp_angle(cam_yaw, yaw, minf(1.0, 3.5 * dt))
+    var back := Vector3(sin(cam_yaw), 0.0, cos(cam_yaw))
+    var ratio := clampf(speed / _vmax(), 0.0, 1.0)
+    var target := Vector3(pos.x, y, pos.z)
+    var cp := target + back * (8.0 + ratio * 2.5) + Vector3(0.0, 3.4 + y * 0.3, 0.0)
+    if shake > 0.0:
+        cp += Vector3(randf() - 0.5, randf() - 0.5, 0.0) * shake * 0.6
+    camera_3d.position = cp
+    camera_3d.look_at(target + Vector3(0, 1.2, 0) - back * 6.0, Vector3.UP)
+    camera_3d.fov = lerpf(camera_3d.fov, 68.0 + ratio * 20.0, minf(1.0, 3.0 * dt))
+# ======================= ФИНИШ / РЕЗУЛЬТАТ =======================
 
-func _finish_run(win: bool) -> void:
+func _finish_race(ok: bool) -> void:
+    var reward := 0
+    var bonus := 0
+    if ok:
+        finishes += 1
+        reward = int(MAPS[map_id]["reward"])
+        if finishes % 3 == 0:
+            bonus = REWARD_EVERY_3
+    coins += run_coins + reward + bonus
+    last_result = {"ok": ok, "time": run_time, "coins": run_coins, "reward": reward, "bonus": bonus, "map": map_id}
+    _save_game()
     mode = "result"
     _engine_sounds(false)
-    var reward := 0
-    var bonus := false
-    if win:
-        finishes += 1
-        reward = 400 + (MAX_HITS - hits) * 100
-        if finishes % 3 == 0:
-            reward += REWARD_EVERY_3
-            bonus = true
-        coins += reward
-    _save_game()
-    last_result = {"win": win, "time": run_time, "reward": reward, "hits": hits, "bonus": bonus}
+    _update_music()
+    if not ok:
+        crash_player.play()
     _show_result()
 
-func _update_camera(dt: float, snap: bool) -> void:
-    if car == null:
-        return
-    var back := Vector3(sin(yaw), 0.0, cos(yaw))
-    if snap:
-        cam_back = back
+func _show_result() -> void:
+    _clear_ui()
+    var ok := bool(last_result.get("ok", false))
+    var vb := _center_box()
+    if ok:
+        vb.add_child(_clabel("ФИНИШ!", 56, GOLD))
     else:
-        cam_back = cam_back.lerp(back, minf(1.0, 5.0 * dt))
-    if cam_back.length() < 0.01:
-        cam_back = back
-    cam_back = cam_back.normalized()
-    var dist := 9.0 + clampf(speed, 0.0, 100.0) * 0.03
-    var pos := car.position + cam_back * dist + Vector3(0, 3.8, 0)
-    if shake > 0.0:
-        pos += Vector3(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0), randf_range(-1.0, 1.0)) * shake * 0.35
-        shake = maxf(0.0, shake - 2.5 * dt)
-    camera_3d.position = pos
-    camera_3d.look_at(car.position + Vector3(0, 1.0, 0) - cam_back * 5.0, Vector3.UP)
-    camera_3d.fov = lerpf(camera_3d.fov, 68.0 + clampf(speed, 0.0, 150.0) * 0.12, minf(1.0, 3.0 * dt))
-# ======================= ИНТЕРФЕЙС ГОНКИ И РЕЗУЛЬТАТ =======================
+        vb.add_child(_clabel("Машина разбита!", 52, Color(1, 0.4, 0.4)))
+        vb.add_child(_clabel("Попробуй ещё раз", 30))
+    vb.add_child(_clabel("Время: %s" % _fmt_time(float(last_result.get("time", 0.0))), 28))
+    vb.add_child(_clabel("Собрано монет: %d" % int(last_result.get("coins", 0)), 28))
+    if ok:
+        vb.add_child(_clabel("Награда за финиш: %d" % int(last_result.get("reward", 0)), 28))
+        if int(last_result.get("bonus", 0)) > 0:
+            vb.add_child(_clabel("Бонус за 3 финиша: %d" % int(last_result.get("bonus", 0)), 28, GOLD))
+    vb.add_child(_clabel("Монеты: %d" % coins, 34, GOLD))
+    vb.add_child(_button("Играть снова", start_race.bind(int(last_result.get("map", 0))), 420, 58))
+    vb.add_child(_button("Выбор карты", show_maps, 420, 58))
+    vb.add_child(_button("В меню", show_menu, 420, 58))
 
-func _pad_rects() -> Dictionary:
-    var vp := _vp()
-    var s := 150.0
-    var gap := 20.0
-    var m := 30.0
-    var y := vp.y - s - m
-    var left_x := m
-    var right_x := vp.x - m - 2.0 * s - gap
-    var steer_x := left_x
-    var pedal_x := right_x
-    if bool(controls["swap_sides"]):
-        steer_x = right_x
-        pedal_x = left_x
-    var l_x := steer_x
-    var r_x := steer_x + s + gap
-    if bool(controls["swap_lr"]):
-        l_x = steer_x + s + gap
-        r_x = steer_x
-    var b_x := pedal_x
-    var g_x := pedal_x + s + gap
-    if bool(controls["swap_pedals"]):
-        b_x = g_x
-        g_x = pedal_x
-    return {
-        "left": Rect2(l_x, y, s, s),
-        "right": Rect2(r_x, y, s, s),
-        "brake": Rect2(b_x, y, s, s),
-        "gas": Rect2(g_x, y, s, s),
-    }
+# ======================= HUD =======================
 
 func _build_hud() -> void:
     _clear_ui()
     var vp := _vp()
-    coins_label = _label("Монеты: %d" % coins, 28)
-    coins_label.position = Vector2(20, 12)
+    coins_label = _label("", 26, GOLD)
+    coins_label.position = Vector2(24, 14)
     ui.add_child(coins_label)
-    status_label = _label("", 24)
-    status_label.position = Vector2(20, 50)
-    ui.add_child(status_label)
-    hits_label = _label("", 24)
-    hits_label.position = Vector2(20, 86)
+    hits_label = _label("", 26)
+    hits_label.position = Vector2(24, 50)
     ui.add_child(hits_label)
-    speed_label = _clabel("0 км/ч", 36)
-    speed_label.custom_minimum_size = Vector2(240, 0)
-    speed_label.position = Vector2(vp.x * 0.5 - 120.0, vp.y - 60.0)
-    ui.add_child(speed_label)
-    var mb := _button("Меню", func(): show_menu(), 150, 48)
-    mb.position = Vector2(vp.x - 170.0, 16.0)
+    status_label = _clabel("", 24)
+    status_label.custom_minimum_size = Vector2(640, 0)
+    status_label.position = Vector2(vp.x * 0.5 - 320.0, 14)
+    ui.add_child(status_label)
+    var mb := _button("Меню", show_menu, 130, 48)
+    mb.position = Vector2(vp.x - 154.0, 12)
     ui.add_child(mb)
     if free_mode:
-        var rb := _button("Сброс", func(): _respawn_car(true), 150, 48)
-        rb.position = Vector2(vp.x - 170.0, 72.0)
+        var rb := _button("Респавн", _respawn_car.bind(true), 130, 48)
+        rb.position = Vector2(vp.x - 154.0, 68)
         ui.add_child(rb)
     gauge = Control.new()
-    gauge.size = Vector2(240, 240)
-    gauge.position = Vector2(vp.x * 0.5 - 120.0, vp.y - 290.0)
+    gauge.custom_minimum_size = Vector2(190, 190)
+    gauge.size = Vector2(190, 190)
+    gauge.position = Vector2(vp.x * 0.5 - 95.0, vp.y - 205.0)
     gauge.mouse_filter = Control.MOUSE_FILTER_IGNORE
     gauge.draw.connect(_draw_gauge)
     ui.add_child(gauge)
-    var rects := _pad_rects()
-    for action in rects:
-        var r: Rect2 = rects[action]
-        touch_zones[action] = r
-        var pad := ColorRect.new()
-        pad.color = Color(1, 1, 1, 0.18)
-        pad.position = r.position
-        pad.size = r.size
-        pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
-        ui.add_child(pad)
-        var tl := _clabel(str(PAD_TEXT[action]), 34)
-        pad.add_child(tl)
-        tl.set_anchors_preset(Control.PRESET_FULL_RECT)
-        tl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-        touch_pads[action] = pad
+    speed_label = _clabel("0", 38)
+    speed_label.custom_minimum_size = Vector2(190, 0)
+    speed_label.position = Vector2(0, 78)
+    gauge.add_child(speed_label)
+    var kl := _clabel("км/ч", 18)
+    kl.custom_minimum_size = Vector2(190, 0)
+    kl.position = Vector2(0, 126)
+    gauge.add_child(kl)
+    var sz := 128.0
+    var gap := 14.0
+    var mg := 24.0
+    var steer_acts: Array = ["left", "right"]
+    if bool(controls["swap_lr"]):
+        steer_acts.reverse()
+    var pedal_acts: Array = ["brake", "gas"]
+    if bool(controls["swap_pedals"]):
+        pedal_acts.reverse()
+    var steer_x := mg
+    var pedal_x := vp.x - mg - sz * 2.0 - gap
+    if bool(controls["swap_sides"]):
+        steer_x = pedal_x
+        pedal_x = mg
+    var py := vp.y - sz - mg
+    for k in range(2):
+        _add_pad(steer_acts[k], Rect2(steer_x + k * (sz + gap), py, sz, sz))
+        _add_pad(pedal_acts[k], Rect2(pedal_x + k * (sz + gap), py, sz, sz))
+    _update_hud()
 
-func _draw_gauge() -> void:
-    if not is_instance_valid(gauge):
-        return
-    var c := Vector2(120, 120)
-    var gmax := GAUGE_MAX_KMH
-    if bool(car_turbo[current_car]):
-        gmax = TURBO_MAX_KMH
-    gauge.draw_circle(c, 112.0, Color(0, 0, 0, 0.55))
-    gauge.draw_arc(c, 100.0, deg_to_rad(135.0), deg_to_rad(405.0), 48, Color(1, 1, 1, 0.4), 6.0)
-    var frac := clampf(absf(speed) * 3.6 / gmax, 0.0, 1.0)
-    var ang := deg_to_rad(135.0 + 270.0 * frac)
-    if frac > 0.01:
-        gauge.draw_arc(c, 100.0, deg_to_rad(135.0), ang, 48, Color(1, 0.6, 0.1), 8.0)
-    gauge.draw_line(c, c + Vector2(cos(ang), sin(ang)) * 85.0, Color(1, 0.2, 0.2), 5.0)
-    gauge.draw_circle(c, 9.0, Color.WHITE)
+func _add_pad(action: String, rect: Rect2) -> void:
+    var p := ColorRect.new()
+    p.position = rect.position
+    p.size = rect.size
+    p.color = Color(0, 0, 0, 0.35)
+    p.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    ui.add_child(p)
+    var l := _clabel(str(PAD_TEXT[action]), 30)
+    l.custom_minimum_size = Vector2(rect.size.x, 0)
+    l.position = Vector2(0, rect.size.y * 0.5 - 22.0)
+    p.add_child(l)
+    touch_zones[action] = rect
+    touch_pads[action] = p
 
 func _update_hud() -> void:
-    if not is_instance_valid(speed_label):
+    if status_label == null or not is_instance_valid(status_label):
         return
-    var txt := "%d км/ч" % int(absf(speed) * 3.6)
-    if bool(car_turbo[current_car]):
-        txt += "  ТУРБО"
-    speed_label.text = txt
-    coins_label.text = "Монеты: %d" % coins
+    coins_label.text = "Монеты: %d" % (coins + run_coins)
     if free_mode:
-        status_label.text = "Свободная езда (R — сброс)"
         hits_label.text = ""
+        status_label.text = "Свободная игра   Лучший прыжок: %d м" % int(best_jump)
     else:
-        status_label.text = "До финиша: %d м" % maxi(0, int(ROAD_LENGTH + car.position.z))
         hits_label.text = "Удары: %d / %d" % [hits, MAX_HITS]
+        status_label.text = "%s   %.2f / %.1f км   %s" % [MAPS[map_id]["name"], maxf(progress, 0.0) / 1000.0, TRACK_LEN / 1000.0, _fmt_time(run_time)]
+    speed_label.text = str(int(absf(speed) * 3.6))
     for a in touch_pads:
-        var pad: ColorRect = touch_pads[a]
-        if _pressed(a):
-            pad.color = Color(1, 1, 1, 0.45)
-        else:
-            pad.color = Color(1, 1, 1, 0.18)
-    if is_instance_valid(gauge):
-        gauge.queue_redraw()
+        touch_pads[a].color = Color(1, 1, 1, 0.4) if _pressed(a) else Color(0, 0, 0, 0.35)
+    gauge.queue_redraw()
 
-func _show_result() -> void:
-    mode = "result"
-    _engine_sounds(false)
-    _update_music()
-    _clear_ui()
-    var box := _center_box()
-    var win: bool = bool(last_result.get("win", false))
-    if win:
-        box.add_child(_clabel("ФИНИШ!", 52, Color(0.5, 1, 0.5)))
-    else:
-        box.add_child(_clabel("Машина разбита!", 48, Color(1, 0.4, 0.4)))
-    box.add_child(_clabel("Время: %.1f с" % float(last_result.get("time", 0.0)), 28))
-    box.add_child(_clabel("Удары: %d / %d" % [int(last_result.get("hits", 0)), MAX_HITS], 28))
-    if win:
-        box.add_child(_clabel("Награда: +%d монет" % int(last_result.get("reward", 0)), 30, GOLD))
-        if bool(last_result.get("bonus", false)):
-            box.add_child(_clabel("Бонус за 3 финиша!", 26, GOLD))
-    else:
-        box.add_child(_clabel("Награды нет, попробуй ещё раз", 24))
-    box.add_child(_clabel("Монеты: %d" % coins, 28))
-    box.add_child(_button("Играть снова", func(): start_run(false)))
-    box.add_child(_button("В меню", func(): show_menu()))
+func _draw_gauge() -> void:
+    var c := Vector2(95, 95)
+    gauge.draw_circle(c, 92.0, Color(0, 0, 0, 0.45))
+    var a0 := deg_to_rad(135.0)
+    var sweep := deg_to_rad(270.0)
+    gauge.draw_arc(c, 78.0, a0, a0 + sweep, 64, Color(1, 1, 1, 0.25), 10.0)
+    var f := clampf(absf(speed) * 3.6 / GAUGE_MAX_KMH, 0.0, 1.0)
+    if f > 0.01:
+        gauge.draw_arc(c, 78.0, a0, a0 + sweep * f, 64, Color(0.2, 1.0, 0.3).lerp(Color(1, 0.2, 0.1), f), 10.0)
+    var ang := a0 + sweep * f
+    gauge.draw_line(c, c + Vector2(cos(ang), sin(ang)) * 70.0, Color.WHITE, 4.0)
